@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panel de revendedores</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f4f5f7;color:#1c1e21}
+header{background:#1d2b4f;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
+main{max-width:900px;margin:16px auto;padding:0 12px}
+.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px #0002}
+h2{margin:0 0 12px;font-size:1.05rem}input,select,button{font:inherit;padding:9px 10px;border-radius:6px;border:1px solid #ccd}
+button{background:#2f5bea;color:#fff;border:0;cursor:pointer}button.sec{background:#e6e8ee;color:#222}button.red{background:#c62828}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}.row input{flex:1;min-width:120px}
+table{width:100%;border-collapse:collapse;font-size:.9rem}th,td{padding:6px 4px;border-bottom:1px solid #eee;text-align:left}
+.tbl{overflow-x:auto}.msg{padding:8px;border-radius:6px;margin-top:8px}.ok{background:#e3f6e8}.err{background:#fde7e7}.warn{background:#fff4d6}
+.bal{font-size:1.8rem;font-weight:700}.hidden{display:none}.tag{padding:2px 6px;border-radius:4px;font-size:.8rem}
+.completed{background:#d7f3de}.failed{background:#fbd9d9}.pending,.unknown{background:#ffe9b0}
+</style></head><body>
+<header><b>Panel de revendedores</b><span id="who"></span></header>
+<main>
+ <div id="login" class="card hidden"><h2>Iniciar sesión</h2>
+  <div class="row"><input id="lu" placeholder="Usuario" autocomplete="username"><input id="lp" type="password" placeholder="Contraseña" autocomplete="current-password"></div>
+  <button id="lb">Entrar</button><div id="lm"></div></div>
+ <div id="app" class="hidden"></div>
+</main>
+<script src="app.js"></script></body></html>
