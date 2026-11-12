@@ -1,0 +1,29 @@
+# Opcional: "Blueprint" de Render (plan gratis; los datos viven en MongoDB Atlas, no en disco).
+# Los valores marcados sync:false los escribes tú en el panel de Render (no se guardan en el repo).
+services:
+  - type: web
+    name: panel-revendedores
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: PROVIDER_MODE
+        value: real
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: PROVIDER_API_KEY
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false

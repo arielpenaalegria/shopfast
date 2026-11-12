@@ -1,0 +1,17 @@
+{
+  "name": "panel-revendedores",
+  "version": "1.0.0",
+  "description": "Panel de subrevendedores con saldo propio, sobre la API de Central One (MongoDB)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.13 <25"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "crear-admin": "node scripts/crear-admin.js",
+    "dev": "MEMORY_DB=1 node server.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.10.0"
+  }
+}
