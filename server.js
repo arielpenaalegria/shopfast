@@ -34,6 +34,14 @@ const httpErr = (http, msg) => Object.assign(new Error(msg), { http });
 const ledger = async (s, uid, cents, type, ref, note) =>
   C.ledger.insertOne({ _id: await nextId('ledger', s), user_id: uid, amount_cents: cents, type, ref: ref ?? null, note: note ?? null, created_at: now() }, { session: s });
 const addBalance = (s, uid, delta) => C.users.updateOne({ _id: uid }, { $inc: { balance_cents: delta } }, { session: s });
+/** Región/servidor de un producto (ID, BR, LATAM, EU, GLOBAL...), igual que en el portal de Central One.
+ *  Usa el campo region del catálogo; si no viene, lo que va entre paréntesis en el nombre ("Free Fire (BR) · ..."). */
+function variantOf(c) {
+  const r = String(c.region || '').trim();
+  if (r) return r.toUpperCase();
+  const m = /\(([^)]+)\)\s*$/.exec(String(c.name || '').split(' · ')[0]);
+  return m ? m[1].trim().toUpperCase() : 'GLOBAL';
+}
 const upOrder = (id, set, filter = {}) => C.orders.updateOne({ _id: id, ...filter }, { $set: { ...set, updated_at: now() } });
 
 // ---------- rutas API ----------
@@ -65,12 +73,12 @@ async function availableProducts(onlyId) {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   return ps.map(p => ({ p, c: cs.get(p.catalog_item_id) }))
     .filter(({ c }) => c && c.in_catalog === 1 && c.price_e4 != null && c.in_stock === 1 && c.requires_target === 1)
-    .map(({ p, c }) => ({ id: p._id, name: p.name, family: c.family_name || 'Otros', product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
+    .map(({ p, c }) => ({ id: p._id, name: p.name, family: c.family_name || 'Otros', variant: variantOf(c), product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
 }
 
 route('GET', '/api/products', 'reseller', async (req, res, u) =>
   send(res, 200, (await availableProducts()).sort((a, b) => a.name.localeCompare(b.name)).map(p => ({
-    id: p.id, name: p.name, family: p.family, price: priceCents(p.price_e4, u.markup_pct) / 100, fields: p.target_schema,
+    id: p.id, name: p.name, family: p.family, variant: p.variant, price: priceCents(p.price_e4, u.markup_pct) / 100, fields: p.target_schema,
   }))));
 
 /** Valida los datos del destino contra el target_schema del producto (nunca fijos en el código).
@@ -392,7 +400,7 @@ route('GET', '/api/admin/catalog', 'admin', async (req, res) => {
     .sort((a, b) => String(a.family_name || '').localeCompare(String(b.family_name || '')) || (a.price_e4 ?? 0) - (b.price_e4 ?? 0));
   send(res, 200, rows.map(c => {
     const pr = enabled.get(c._id);
-    return { product_id: c._id, name: c.name, sku: c.sku, family: c.family_name || 'Otros', in_stock: c.in_stock,
+    return { product_id: c._id, name: c.name, sku: c.sku, family: c.family_name || 'Otros', variant: variantOf(c), in_stock: c.in_stock,
       requires_target: c.requires_target, enabled: pr && pr.active ? 1 : 0, local_id: pr ? pr._id : null,
       price: c.price_e4 === null ? null : e4ToStr(c.price_e4), fields: (c.target_schema || []).map(f => f.label || f.key).join(', ') };
   }));
@@ -400,8 +408,9 @@ route('GET', '/api/admin/catalog', 'admin', async (req, res) => {
 
 // Vender / dejar de vender todos los paquetes por ID de un juego de una vez
 route('POST', '/api/admin/family', 'admin', async (req, res, _u, b) => {
-  const fam = String(b.family || ''), on = !!b.active;
-  const items = (await C.catalog.find({ in_catalog: 1, requires_target: 1 }).toArray()).filter(c => (c.family_name || 'Otros') === fam);
+  const fam = String(b.family || ''), on = !!b.active, variant = b.variant ? String(b.variant) : null;
+  const items = (await C.catalog.find({ in_catalog: 1, requires_target: 1 }).toArray())
+    .filter(c => (c.family_name || 'Otros') === fam && (!variant || variantOf(c) === variant));
   if (!items.length) return send(res, 404, { error: 'Ese juego no tiene paquetes por ID' });
   for (const c of items) {
     const ex = await C.products.updateOne({ catalog_item_id: c._id }, { $set: { active: on ? 1 : 0 } });
@@ -434,7 +443,7 @@ route('GET', '/api/admin/products', 'admin', async (req, res) => {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   send(res, 200, ps.filter(p => cs.has(p.catalog_item_id)).map(p => {
     const c = cs.get(p.catalog_item_id);
-    return { id: p._id, name: p.name, family: c.family_name || 'Otros', active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
+    return { id: p._id, name: p.name, family: c.family_name || 'Otros', variant: variantOf(c), active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
       cost: c.price_e4 === null ? null : e4ToStr(c.price_e4) };
   }));
 });
@@ -593,7 +602,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (url.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok'); }
-    if (url.pathname === '/webhooks/central-one' && req.method === 'POST') return await handleWebhook(req, res);
+    if ((url.pathname === '/webhooks/central-one' || url.pathname === '/api/webhooks') && req.method === 'POST') return await handleWebhook(req, res);
     if (url.pathname.startsWith('/api/')) {
       const r = routes[req.method + ' ' + url.pathname];
       if (!r) return send(res, 404, { error: 'No encontrado' });
