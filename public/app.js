@@ -1,4 +1,13 @@
 'use strict';
+// Estilos de las tarjetas de región (aquí para no tener que tocar index.html)
+document.head.append(Object.assign(document.createElement('style'), { textContent: `
+.reg{display:flex;align-items:center;gap:12px;width:100%;background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:8px;text-align:left;font-weight:400}
+.code{display:inline-flex;align-items:center;justify-content:center;min-width:52px;height:42px;padding:0 10px;border-radius:10px;background:#f1f5f9;font-weight:800;letter-spacing:.5px;font-size:.9rem}
+.rn{flex:1;display:flex;flex-direction:column;min-width:0}.rn b{font-size:1.02rem}.chev{font-size:1.6rem;color:var(--mut);line-height:1}
+details.regd{border:1px solid var(--line);border-radius:12px;margin:8px 0;padding:0 10px}
+details.regd summary{background:none!important;border:0!important;font-weight:400;display:flex;align-items:center;gap:12px;padding:10px 0;cursor:pointer;list-style:none}details.regd summary::-webkit-details-marker{display:none}
+details.regd[open] .chev{transform:rotate(90deg)}
+` }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -23,6 +32,16 @@ const tag = s => el('span', { class: 'tag ' + s }, STATUS[s] || s);
 const card = (title, ...kids) => el('div', { class: 'card' }, title ? el('h2', {}, title) : null, ...kids);
 const groupBy = (arr, f) => arr.reduce((m, x) => { const k = f(x); (m.get(k) || m.set(k, []).get(k)).push(x); return m; }, new Map());
 let timer = null, flash = null;
+const REG = { ID: 'Indonesia', BR: 'Brasil', EU: 'Europa', LATAM: 'Latinoamérica', US: 'Estados Unidos', NA: 'Norteamérica', SG: 'Singapur', MY: 'Malasia',
+  TH: 'Tailandia', VN: 'Vietnam', PH: 'Filipinas', IN: 'India', MENA: 'Medio Oriente y Norte de África', ME: 'Medio Oriente', TW: 'Taiwán', KR: 'Corea', JP: 'Japón', RU: 'Rusia', TR: 'Turquía', SA: 'Arabia Saudita', GLOBAL: '' };
+const regName = v => REG[String(v).toUpperCase()] ?? '';
+const regLabel = v => regName(v) ? `${regName(v)} (${v})` : v;
+// Tarjeta de región como en el portal: [CÓDIGO] Nombre · N opciones  >
+const regionCard = (code, sub, onclick, right) => el('button', { class: 'reg', onclick },
+  el('span', { class: 'code' }, code), el('span', { class: 'rn' }, regName(code) ? el('b', {}, regName(code)) : null, el('span', { class: 'mut' }, sub)),
+  right || el('span', { class: 'chev' }, '›'));
+// "Free Fire (BR) · 100 Diamantes" -> "100 Diamantes"
+const shortName = n => { const i = n.indexOf(' · '); return i > 0 ? n.slice(i + 3) : n; };
 
 function show(which) {
   clearTimeout(timer);
@@ -46,7 +65,7 @@ async function boot() {
 }
 
 /* =================== SUBREVENDEDOR =================== */
-const pick = { family: null, product: null }; let scrollTo3 = false;
+const pick = { family: null, variant: null, product: null }; let scrollTo3 = false;
 async function resellerView() {
   clearTimeout(timer);
   const [me, products, orders, led] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'), api('GET', '/api/ledger')]);
@@ -61,12 +80,24 @@ async function resellerView() {
     buy.replaceChildren();
     if (!products.length) return buy.append(el('div', { class: 'mut' }, 'Aún no hay productos disponibles. Pídele al administrador que active juegos.'));
     buy.append(el('h3', {}, '1. Elige el juego'),
-      el('div', { class: 'chips' }, ...[...fams.keys()].map(f => el('button', { class: 'chip' + (f === pick.family ? ' on' : ''), onclick: () => { pick.family = f; pick.product = null; renderBuy(); } }, f))));
-    const list = (fams.get(pick.family) || []).slice().sort((a, b) => a.price - b.price);
+      el('div', { class: 'chips' }, ...[...fams.keys()].map(f => el('button', { class: 'chip' + (f === pick.family ? ' on' : ''), onclick: () => { pick.family = f; pick.variant = null; pick.product = null; renderBuy(); } }, f))));
+    const vars = groupBy(fams.get(pick.family) || [], p => p.variant);
+    if (pick.variant && !vars.has(pick.variant)) pick.variant = null;
+    if (vars.size === 1) pick.variant = vars.keys().next().value;
+    if (vars.size > 1 && !pick.variant) {
+      buy.append(el('h3', {}, '2. ¿Qué región?'),
+        el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Elige la región de la cuenta del jugador: cada paquete solo sirve en cuentas de su región o servidor.'),
+        ...[...vars].sort((x, y) => y[1].length - x[1].length).map(([v, ps]) => regionCard(v, `${ps.length} opciones`, () => { pick.variant = v; pick.product = null; renderBuy(); })));
+      return;
+    }
+    if (vars.size > 1) buy.append(el('div', { class: 'row', style: 'margin-top:10px;align-items:center' },
+      el('span', { class: 'code' }, pick.variant), el('b', {}, regName(pick.variant) || pick.variant),
+      el('button', { class: 'ghost', onclick: () => { pick.variant = null; pick.product = null; renderBuy(); } }, '← Cambiar región')));
+    const list = (vars.get(pick.variant) || []).slice().sort((a, b) => a.price - b.price);
     if (!list.some(p => p.id === pick.product)) pick.product = null;
-    buy.append(el('h3', {}, '2. Elige el paquete'),
+    buy.append(el('h3', {}, (vars.size > 1 ? '3' : '2') + '. Elige el paquete'),
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
-        p.name.replace(pick.family, '').replace(/^\s*[·\-–]\s*/, '') || p.name, el('b', {}, money(p.price))))));
+        shortName(p.name), el('b', {}, money(p.price))))));
     const p = list.find(x => x.id === pick.product);
     if (!p) return;
     const inputs = {};
@@ -100,7 +131,7 @@ async function resellerView() {
       } catch (e) { flash = [e.message, 'err']; }
       resellerView();
     };
-    const step3 = el('h3', {}, '3. Datos del jugador · ' + p.name);
+    const step3 = el('h3', {}, (vars.size > 1 ? '4' : '3') + '. Datos del jugador · ' + shortName(p.name));
     buy.append(step3, el('div', { class: 'row' }, ...fields), el('div', { class: 'row' }, vbtn, btn), vbox);
     if (scrollTo3) { scrollTo3 = false; setTimeout(() => { step3.scrollIntoView({ behavior: 'smooth', block: 'start' }); fields[0] && fields[0].focus(); }, 50); }
   };
@@ -168,14 +199,22 @@ async function adminView() {
           el('div', { class: 'body' },
             byId.length ? el('div', { class: 'acts' }, on < byId.length ? act(`Vender todos por ID (${byId.length})`, () => api('POST', '/api/admin/family', { family: f, active: true }), '') : null,
               on ? act('Dejar de vender todo', () => api('POST', '/api/admin/family', { family: f, active: false }), 'red') : null) : null,
-            el('div', { class: 'list' }, ...items.map(c => el('div', {},
-              el('div', { class: 'l' }, el('div', {}, c.name), el('div', { class: 'mut' }, (c.price === null ? '' : 'Costo US$ ' + c.price) + (c.fields ? ' · pide: ' + c.fields : '') + (c.in_stock ? '' : ' · agotado'))),
-              el('div', { class: 'r' }, !c.requires_target ? el('span', { class: 'tag code' }, 'Código')
-                : c.enabled ? act('Quitar', () => api('POST', '/api/admin/product-update', { id: c.local_id, active: false }), 'red')
-                  : act('Vender', () => api('POST', '/api/admin/products', { product_id: c.product_id }), '')))))));
+            ...[...groupBy(items, c => c.variant)].sort((x, y) => y[1].length - x[1].length).map(([v, vi]) => {
+              const vId = vi.filter(i => i.requires_target), vOn = vId.filter(i => i.enabled).length;
+              return el('details', { class: 'regd' },
+                el('summary', {}, el('span', { class: 'code' }, v), el('span', { class: 'rn' }, regName(v) ? el('b', {}, regName(v)) : null,
+                  el('span', { class: 'mut' }, `${vi.length} opciones · ${vId.length} por ID · vendes ${vOn}`)), vOn ? el('span', { class: 'tag id' }, 'Activo') : el('span', { class: 'chev' }, '›')),
+                vId.length ? el('div', { class: 'acts' }, vOn < vId.length ? act(`Vender toda la región (${vId.length})`, () => api('POST', '/api/admin/family', { family: f, variant: v, active: true }), '') : null,
+                  vOn ? act('Quitar región', () => api('POST', '/api/admin/family', { family: f, variant: v, active: false }), 'red') : null) : null,
+                el('div', { class: 'list' }, ...vi.map(c => el('div', {},
+                  el('div', { class: 'l' }, el('div', {}, shortName(c.name)), el('div', { class: 'mut' }, (c.price === null ? '' : 'Costo US$ ' + c.price) + (c.fields ? ' · pide: ' + c.fields : '') + (c.in_stock ? '' : ' · agotado'))),
+                  el('div', { class: 'r' }, !c.requires_target ? el('span', { class: 'tag code' }, 'Código')
+                    : c.enabled ? act('Quitar', () => api('POST', '/api/admin/product-update', { id: c.local_id, active: false }), 'red')
+                      : act('Vender', () => api('POST', '/api/admin/products', { product_id: c.product_id }), ''))))));
+            })));
       })),
       cat.length ? null : el('div', { class: 'mut' }, 'No hay productos. Pulsa "Actualizar" o revisa que tu llave tenga el permiso catalog:read.')));
-    const mine = groupBy(prods.filter(p => p.active), p => p.family);
+    const mine = groupBy(prods.filter(p => p.active), p => p.family + ' · ' + regLabel(p.variant));
     out.append(card('Lo que ven tus revendedores', mine.size ? el('div', {}, ...[...mine].map(([f, ps]) => el('div', {}, el('h3', {}, f),
       el('div', { class: 'list' }, ...ps.map(p => el('div', {},
         el('div', { class: 'l' }, el('div', {}, p.name), el('div', { class: 'mut' }, p.cost === null ? 'fuera del catálogo' : 'Costo US$ ' + p.cost + (p.in_stock ? '' : ' · agotado'))),
