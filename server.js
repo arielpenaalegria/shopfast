@@ -65,33 +65,64 @@ async function availableProducts(onlyId) {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   return ps.map(p => ({ p, c: cs.get(p.catalog_item_id) }))
     .filter(({ c }) => c && c.in_catalog === 1 && c.price_e4 != null && c.in_stock === 1 && c.requires_target === 1)
-    .map(({ p, c }) => ({ id: p._id, name: p.name, product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
+    .map(({ p, c }) => ({ id: p._id, name: p.name, family: c.family_name || 'Otros', product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
 }
 
 route('GET', '/api/products', 'reseller', async (req, res, u) =>
   send(res, 200, (await availableProducts()).sort((a, b) => a.name.localeCompare(b.name)).map(p => ({
-    id: p.id, name: p.name, price: priceCents(p.price_e4, u.markup_pct) / 100, fields: p.target_schema,
+    id: p.id, name: p.name, family: p.family, price: priceCents(p.price_e4, u.markup_pct) / 100, fields: p.target_schema,
   }))));
+
+/** Valida los datos del destino contra el target_schema del producto (nunca fijos en el código).
+ *  Devuelve { payload } o { error }. */
+function buildPayload(p, body) {
+  const given = body.target && typeof body.target === 'object' ? body.target : {};
+  const payload = {};
+  for (const f of p.target_schema) {
+    let v = given[f.key];
+    if (typeof v !== 'string' && typeof v !== 'number') return { error: `Falta: ${f.label}` };
+    v = String(v).trim();
+    if (f.type === 'select') {
+      if (!(f.options || []).some(o => o.value === v)) return { error: `Opción inválida en: ${f.label}` };
+    } else {
+      if (/^[\d\s\-()+]+$/.test(v)) v = v.replace(/[\s\-()]/g, ''); // números de teléfono: sin espacios ni guiones
+      if (!/^[^\x00-\x1f<>]{1,64}$/.test(v)) return { error: `${f.label} inválido` };
+    }
+    payload[f.key] = v;
+  }
+  return { payload };
+}
+
+// Verificar el ID antes de comprar (POST /player/validate). Límite de Central One: 30/min para TODA la cuenta,
+// así que aquí se limita a 25/min en total y 1 cada 2 s por usuario. No cobra nada y no es obligatorio.
+const valHits = []; const valLast = new Map();
+route('POST', '/api/validate', 'reseller', async (req, res, u, body) => {
+  const p = (await availableProducts(Number(body.product_id)))[0];
+  if (!p) return send(res, 400, { error: 'Producto no disponible ahora' });
+  const b = buildPayload(p, body);
+  if (b.error) return send(res, 400, { error: b.error });
+  const t = Date.now();
+  while (valHits.length && t - valHits[0] > 60000) valHits.shift();
+  if (t - (valLast.get(u.id) || 0) < 2000 || valHits.length >= 25) return send(res, 429, { error: 'Espera unos segundos e intenta verificar otra vez' });
+  valLast.set(u.id, t); valHits.push(t);
+  try {
+    const r = await provider.validatePlayer({ catalogItemId: p.product_id, targetPayload: b.payload });
+    const st = String(r.status || '').toLowerCase();
+    if (st === 'valid') return send(res, 200, { result: 'valid', name: r.name || null });
+    if (st === 'invalid') return send(res, 200, { result: 'invalid' });
+    return send(res, 200, { result: 'unverified' }); // este juego no permite verificar: se puede enviar igual
+  } catch (e) {
+    if (e instanceof ProviderError && e.definitive && e.code !== 'insufficient_scope' && e.code !== 'invalid_api_key') return send(res, 200, { result: 'invalid' });
+    return send(res, 200, { result: 'unverified' });
+  }
+});
 
 route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
   const p = (await availableProducts(Number(body.product_id)))[0];
   if (!p) return send(res, 400, { error: 'Producto no disponible ahora' });
-
-  // Los campos se validan contra el target_schema del producto (nunca fijos en el código)
-  const schema = p.target_schema, given = body.target && typeof body.target === 'object' ? body.target : {};
-  const payload = {};
-  for (const f of schema) {
-    let v = given[f.key];
-    if (typeof v !== 'string' && typeof v !== 'number') return send(res, 400, { error: `Falta: ${f.label}` });
-    v = String(v).trim();
-    if (f.type === 'select') {
-      if (!(f.options || []).some(o => o.value === v)) return send(res, 400, { error: `Opción inválida en: ${f.label}` });
-    } else {
-      if (/^[\d\s\-()+]+$/.test(v)) v = v.replace(/[\s\-()]/g, ''); // números de teléfono: sin espacios ni guiones
-      if (!/^[^\x00-\x1f<>]{1,64}$/.test(v)) return send(res, 400, { error: `${f.label} inválido` });
-    }
-    payload[f.key] = v;
-  }
+  const b = buildPayload(p, body);
+  if (b.error) return send(res, 400, { error: b.error });
+  const payload = b.payload;
   const price = priceCents(p.price_e4, u.markup_pct);
   const display = Object.values(payload).join(' · ');
 
@@ -352,18 +383,34 @@ route('GET', '/api/admin/status', 'admin', async (req, res) => {
 });
 
 // Catálogo de Central One (copia local) para que el admin elija qué vender
+// Catálogo de Central One (copia local) para que el admin elija qué vender. Se devuelve COMPLETO (antes se cortaba en 60).
 route('GET', '/api/admin/catalog', 'admin', async (req, res) => {
   const q = (new URL(req.url, 'http://x').searchParams.get('q') || '').trim().toLowerCase();
-  const enabled = new Set((await C.products.find({}).toArray()).map(p => p.catalog_item_id));
+  const enabled = new Map((await C.products.find({}).toArray()).map(p => [p.catalog_item_id, p]));
   const rows = (await C.catalog.find({ in_catalog: 1 }).toArray())
-    .filter(c => [c.name, c.sku, c.family_name].some(x => String(x || '').toLowerCase().includes(q)))
-    .sort((a, b) => String(a.family_name || '').localeCompare(String(b.family_name || '')) || String(a.name).localeCompare(String(b.name)))
-    .slice(0, 60);
-  send(res, 200, rows.map(c => ({
-    product_id: c._id, name: c.name, sku: c.sku, family_name: c.family_name, in_stock: c.in_stock, in_catalog: c.in_catalog,
-    requires_target: c.requires_target, enabled: enabled.has(c._id) ? 1 : 0,
-    price: c.price_e4 === null ? null : e4ToStr(c.price_e4), fields: c.target_schema.map(f => f.key).join(', '),
-  })));
+    .filter(c => !q || [c.name, c.sku, c.family_name].some(x => String(x || '').toLowerCase().includes(q)))
+    .sort((a, b) => String(a.family_name || '').localeCompare(String(b.family_name || '')) || (a.price_e4 ?? 0) - (b.price_e4 ?? 0));
+  send(res, 200, rows.map(c => {
+    const pr = enabled.get(c._id);
+    return { product_id: c._id, name: c.name, sku: c.sku, family: c.family_name || 'Otros', in_stock: c.in_stock,
+      requires_target: c.requires_target, enabled: pr && pr.active ? 1 : 0, local_id: pr ? pr._id : null,
+      price: c.price_e4 === null ? null : e4ToStr(c.price_e4), fields: (c.target_schema || []).map(f => f.label || f.key).join(', ') };
+  }));
+});
+
+// Vender / dejar de vender todos los paquetes por ID de un juego de una vez
+route('POST', '/api/admin/family', 'admin', async (req, res, _u, b) => {
+  const fam = String(b.family || ''), on = !!b.active;
+  const items = (await C.catalog.find({ in_catalog: 1, requires_target: 1 }).toArray()).filter(c => (c.family_name || 'Otros') === fam);
+  if (!items.length) return send(res, 404, { error: 'Ese juego no tiene paquetes por ID' });
+  for (const c of items) {
+    const ex = await C.products.updateOne({ catalog_item_id: c._id }, { $set: { active: on ? 1 : 0 } });
+    if (!ex.matchedCount && on) {
+      try { await C.products.insertOne({ _id: await nextId('products'), catalog_item_id: c._id, name: c.name.slice(0, 80), active: 1 }); }
+      catch (e) { if (!isDup(e)) throw e; }
+    }
+  }
+  send(res, 200, { ok: true, count: items.length });
 });
 
 let lastTestReq = 0;
@@ -387,7 +434,7 @@ route('GET', '/api/admin/products', 'admin', async (req, res) => {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   send(res, 200, ps.filter(p => cs.has(p.catalog_item_id)).map(p => {
     const c = cs.get(p.catalog_item_id);
-    return { id: p._id, name: p.name, active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
+    return { id: p._id, name: p.name, family: c.family_name || 'Otros', active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
       cost: c.price_e4 === null ? null : e4ToStr(c.price_e4) };
   }));
 });
@@ -450,7 +497,7 @@ async function syncCatalog() {
   if (items.length === 0 && prev > 0) throw new Error('El catálogo llegó vacío; se conserva la copia anterior');
   if (items.length) await C.catalog.bulkWrite(items.map(i => ({ updateOne: {
     filter: { _id: i.productId }, upsert: true,
-    update: { $set: { sku: i.sku, name: i.name, category: i.category, product_type: i.productType, family_name: i.familyName, currency: i.currency,
+    update: { $set: { sku: i.sku, name: i.name, category: i.category, product_type: i.productType, family_name: i.familyName, region: i.region ?? null, currency: i.currency,
       price_e4: i.priceE4, in_stock: i.inStock ? 1 : 0, available_stock: i.availableStock, in_catalog: i.inCatalog ? 1 : 0,
       requires_target: i.requiresTarget ? 1 : 0, target_schema: i.targetSchema || [], price_updated_at: i.priceUpdatedAt ?? null, synced_at: now() } },
   } })));
