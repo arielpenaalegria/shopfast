@@ -105,6 +105,7 @@ class Collection {
     const r = await this._update(f, u, o); const after = r.doc ? clone(r.doc) : null;
     return o.returnDocument === 'after' ? after : prev;
   }
+  async deleteOne(fl) { const i = this.docs.findIndex(d => match(d, fl)); if (i >= 0) this.docs.splice(i, 1); return { deletedCount: i >= 0 ? 1 : 0 }; }
   async bulkWrite(ops, o = {}) { for (const op of ops) { const x = op.updateOne; await this._update(x.filter, x.update, { upsert: x.upsert, session: o.session }); } return {}; }
 }
 class Db { constructor() { this.cols = new Map(); } collection(n) { if (!this.cols.has(n)) this.cols.set(n, new Collection()); return this.cols.get(n); } }

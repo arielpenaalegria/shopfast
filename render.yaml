@@ -29,3 +29,7 @@ services:
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      - key: USDT_WALLET
+        sync: false
+      - key: BSC_RPC_URL
+        sync: false

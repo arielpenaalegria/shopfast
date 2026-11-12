@@ -56,7 +56,11 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
 - Para probar en local sin Mongo: `MEMORY_DB=1 node server.js` (base en memoria, se borra al apagar; **nunca en producción**).
 
 ## Funciones extra
-- **Pedir saldo**: el revendedor envía monto + captura del pago; el admin la ve en la pestaña *Saldo* y aprueba o rechaza. Al aprobar se abona solo.
+- **Pedir saldo (USDT BEP20)**: el revendedor ve tu billetera (`USDT_WALLET`), envía y pega el hash. El panel lo verifica en BSC
+  con `BSC_RPC_URL` (NodeReal): contrato oficial de USDT, destino tu billetera, transacción exitosa, 15 confirmaciones y hash no usado.
+  - Desde una billetera **de confianza** de ese revendedor → se abona solo.
+  - Billetera **nueva** → verificada, pero la apruebas tú una vez (y marcas "confiar" si no es de un exchange).
+  - Si no cuadra (otra red, otro token, otra billetera) o no hay hash → revisión manual en la pestaña *Saldo*.
 - **Ganancias**: pestaña con hoy / semana / mes, gráfica de 14 días, por revendedor y por producto (solo recargas completadas).
 - **Respaldo**: Resumen → *Descargar respaldo* (JSON con revendedores, saldos y pedidos; sin las fotos). Guárdalo en lugar seguro.
 - **Telegram** (opcional): variable `TELEGRAM_BOT_TOKEN` (bot creado con @BotFather). Cada usuario pulsa *Conectar Telegram*.

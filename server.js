@@ -7,6 +7,7 @@ const { C, connect, nextId, withTx, fmt, isDup } = require('./db');
 const A = require('./auth');
 const { provider, ProviderError, MODE, parseE4 } = require('./provider');
 const TG = require('./telegram');
+const BSC = require('./bsc');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -547,52 +548,148 @@ route('GET', '/api/me-extra', 'any', async (req, res, u) => {
   send(res, 200, { telegram: TG.enabled(), telegram_linked: !!d.telegram_chat_id });
 });
 
-// ---------- Solicitudes de saldo (con foto del comprobante) ----------
+// ---------- Solicitudes de saldo: USDT BEP20 ----------
+// Con hash: el panel verifica el pago en BSC. Si es válido y viene de una billetera que ya aprobaste para ese revendedor,
+// se abona solo. Si la billetera es nueva o algo no cuadra, queda para que lo apruebes tú (como siempre).
 const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+const short = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '';
+
+route('GET', '/api/deposit-info', 'any', async (req, res) =>
+  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf }));
+
 route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
-  const cents = toCents(b.amount);
-  if (!(cents >= 100 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido (mínimo 1 USDT)' });
+  const hash = String(b.tx_hash || '').trim().toLowerCase();
+  if (hash && !BSC.isHash(hash)) return send(res, 400, { error: 'El hash no es válido. Debe empezar por 0x y tener 66 caracteres.' });
+  const cents = b.amount === undefined || b.amount === '' ? null : toCents(b.amount);
+  if (cents !== null && !(cents >= 100 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido (mínimo 1 USDT)' });
+  if (!hash && cents === null) return send(res, 400, { error: 'Pega el hash de la transacción (o indica el monto si pagaste de otra forma).' });
   const img = b.image ? String(b.image) : null;
   if (img && (img.length > 2400000 || !IMG_RE.test(img))) return send(res, 400, { error: 'La imagen no es válida o es muy grande' });
-  if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending' }) >= 3) return send(res, 429, { error: 'Ya tienes 3 solicitudes pendientes. Espera a que el admin las revise.' });
+  if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending' }) >= 3) return send(res, 429, { error: 'Ya tienes 3 solicitudes pendientes. Espera a que se revisen.' });
   const id = await nextId('topup_requests');
-  await C.topup_requests.insertOne({ _id: id, user_id: u.id, amount_cents: cents, note: String(b.note || '').slice(0, 300), image: img,
-    status: 'pending', admin_note: null, approved_cents: null, created_at: now(), decided_at: null });
-  TG.notifyAdmins(`💰 Solicitud de saldo #${id}\n${u.username}: ${(cents / 100).toFixed(2)} USDT${b.note ? '\n' + String(b.note).slice(0, 300) : ''}`).catch(() => {});
-  send(res, 201, { ok: true, id });
+  const doc = { _id: id, user_id: u.id, amount_cents: cents, note: String(b.note || '').slice(0, 300), image: img, status: 'pending', admin_note: null,
+    approved_cents: null, created_at: now(), decided_at: null, chain: null,
+    verify: hash ? (BSC.enabled() ? 'wait' : 'manual') : 'manual', verify_msg: hash && !BSC.enabled() ? 'Verificación automática no configurada' : null };
+  if (hash) doc.tx_hash = hash; // único: el mismo pago no se puede usar dos veces
+  try { await C.topup_requests.insertOne(doc); }
+  catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ese hash ya se usó en otra solicitud.' }); throw e; }
+  if (hash && BSC.enabled()) {
+    const r = await verifyDeposit(id);
+    if (r === 'approved') return send(res, 201, { ok: true, id, auto: 'approved', message: 'Pago verificado en la blockchain. Saldo abonado.' });
+    if (r === 'wait') return send(res, 201, { ok: true, id, auto: 'wait', message: 'Pago recibido. Esperando confirmaciones en BSC; se abona solo en unos minutos.' });
+    return send(res, 201, { ok: true, id, auto: 'manual', message: 'Solicitud enviada. El administrador la revisará.' });
+  }
+  TG.notifyAdmins(`💰 Solicitud de saldo #${id} (revisión manual)\n${u.username}: ${cents !== null ? (cents / 100).toFixed(2) + ' USDT' : ''}${hash ? '\nHash: ' + hash : ''}`).catch(() => {});
+  send(res, 201, { ok: true, id, auto: 'manual', message: 'Solicitud enviada. El administrador la revisará.' });
 });
-const trOut = (r, withImage) => ({ id: r._id, amount: r.amount_cents / 100, approved: r.approved_cents == null ? null : r.approved_cents / 100, note: r.note, status: r.status,
-  admin_note: r.admin_note, has_image: !!r.image, image: withImage ? r.image : undefined, created_at: fmt(r.created_at), decided_at: fmt(r.decided_at) });
+
+/** Revisa en BSC una solicitud con hash y actúa. Devuelve 'approved' | 'wait' | 'manual'. Nunca abona dos veces. */
+let verifying = new Set();
+async function verifyDeposit(id) {
+  if (verifying.has(id)) return 'wait';
+  verifying.add(id);
+  try {
+    const t = await C.topup_requests.findOne({ _id: id, status: 'pending' });
+    if (!t || !t.tx_hash) return 'manual';
+    const r = await BSC.check(t.tx_hash);
+    const u = await C.users.findOne({ _id: t.user_id });
+    if (r.state === 'wait' || r.state === 'error') {
+      const old = Date.now() - t.created_at.getTime() > 2 * 3600e3;
+      await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: { verify: old ? 'manual' : 'wait', verify_msg: old ? 'Pasaron 2 horas sin confirmar: ' + r.msg : r.msg } });
+      if (old) TG.notifyAdmins(`⚠️ Solicitud #${id} de ${u.username}: no se pudo confirmar en 2 h. Revísala.\n${r.msg}`).catch(() => {});
+      return old ? 'manual' : 'wait';
+    }
+    if (r.state === 'bad') {
+      await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: { verify: 'bad', verify_msg: r.msg } });
+      TG.notifyAdmins(`⚠️ Solicitud #${id} de ${u.username}: el hash no cuadra. ${r.msg}`).catch(() => {});
+      return 'manual';
+    }
+    // Pago válido en la blockchain
+    const chain = { from: r.from, cents: r.cents, block: r.block };
+    const w = await C.wallets.findOne({ _id: r.from });
+    if (w && w.user_id === t.user_id) {
+      const done = await withTx(async s => {
+        const ch = await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: { status: 'approved', approved_cents: r.cents, chain, verify: 'ok',
+          verify_msg: 'Verificado en BSC', admin_note: 'Aprobado automáticamente (blockchain)', decided_at: now() } }, { session: s });
+        if (!ch.modifiedCount) return false;
+        await addBalance(s, t.user_id, r.cents);
+        await ledger(s, t.user_id, r.cents, 'topup', 'req-' + id, `USDT BEP20 · solicitud #${id}`);
+        return true;
+      });
+      if (done) {
+        TG.notifyUser(t.user_id, `✅ Pago verificado: se te abonaron ${(r.cents / 100).toFixed(2)} USDT (solicitud #${id}).`).catch(() => {});
+        TG.notifyAdmins(`✅ Depósito automático #${id}: ${u.username} +${(r.cents / 100).toFixed(2)} USDT desde ${short(r.from)}`).catch(() => {});
+      }
+      return 'approved';
+    }
+    const why = w ? `Pago válido de ${(r.cents / 100).toFixed(2)} USDT, pero la billetera ${short(r.from)} está asociada a OTRO revendedor.`
+      : `Pago válido de ${(r.cents / 100).toFixed(2)} USDT desde una billetera nueva (${short(r.from)}). Apruébalo una vez.`;
+    await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: { chain, verify: 'verified', verify_msg: why } });
+    TG.notifyAdmins(`💰 Solicitud #${id} de ${u.username}\n${why}`).catch(() => {});
+    return 'manual';
+  } finally { verifying.delete(id); }
+}
+async function recheckDeposits() {
+  if (!BSC.enabled()) return;
+  for (const t of await C.topup_requests.find({ status: 'pending', verify: 'wait' }).sort({ _id: 1 }).limit(10).toArray()) await verifyDeposit(t._id);
+}
+
+const trOut = (r, admin) => ({ id: r._id, amount: r.amount_cents == null ? null : r.amount_cents / 100, approved: r.approved_cents == null ? null : r.approved_cents / 100,
+  note: r.note, status: r.status, admin_note: r.admin_note, has_image: !!r.image, created_at: fmt(r.created_at), decided_at: fmt(r.decided_at),
+  tx_hash: r.tx_hash || null, verify: r.verify || 'manual', verify_msg: r.verify_msg || null,
+  chain_amount: r.chain ? r.chain.cents / 100 : null, chain_from: admin && r.chain ? r.chain.from : undefined });
 route('GET', '/api/topup-requests', 'reseller', async (req, res, u) =>
   send(res, 200, (await C.topup_requests.find({ user_id: u.id }).sort({ _id: -1 }).limit(20).toArray()).map(r => trOut(r, false))));
 
 route('GET', '/api/admin/topup-requests', 'admin', async (req, res) => {
   const rs = await C.topup_requests.find({}).sort({ _id: -1 }).limit(60).toArray();
-  const us = new Map((await C.users.find({ _id: { $in: [...new Set(rs.map(r => r.user_id))] } }).toArray()).map(x => [x._id, x.username]));
-  send(res, 200, rs.map(r => ({ ...trOut(r, false), username: us.get(r.user_id) })));
+  const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
+  const ws = new Map((await C.wallets.find({}).toArray()).map(w => [w._id, w.user_id]));
+  send(res, 200, rs.map(r => ({ ...trOut(r, true), username: us.get(r.user_id),
+    wallet_owner: r.chain && ws.has(r.chain.from) ? us.get(ws.get(r.chain.from)) : null })));
 });
 route('GET', '/api/admin/topup-image', 'admin', async (req, res) => {
   const r = await C.topup_requests.findOne({ _id: Number(new URL(req.url, 'http://x').searchParams.get('id')) });
   send(res, 200, { image: r ? r.image : null });
 });
+route('POST', '/api/admin/topup-recheck', 'admin', async (req, res, _u, b) => {
+  const id = Number(b.id);
+  await C.topup_requests.updateOne({ _id: id, status: 'pending', tx_hash: { $exists: true } }, { $set: { verify: 'wait' } });
+  send(res, 200, { ok: true, result: BSC.enabled() ? await verifyDeposit(id) : 'manual' });
+});
 route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => {
-  const id = Number(b.id), approve = !!b.approve;
+  const id = Number(b.id), approve = !!b.approve, trust = !!b.trust_wallet;
+  let trusted = false;
   try {
     const r = await withTx(async s => {
       const t = await C.topup_requests.findOne({ _id: id, status: 'pending' }, { session: s });
       if (!t) throw httpErr(404, 'Solicitud no encontrada o ya revisada');
-      const cents = approve ? (b.amount !== undefined ? toCents(b.amount) : t.amount_cents) : null;
+      const def = t.chain ? t.chain.cents : t.amount_cents;
+      const cents = approve ? (b.amount !== undefined && b.amount !== '' ? toCents(b.amount) : def) : null;
       if (approve && !(cents > 0 && cents <= 10000000)) throw httpErr(400, 'Monto inválido');
       await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
       if (approve) {
         await addBalance(s, t.user_id, cents);
         await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`);
       }
-      return { user_id: t.user_id, cents };
+      return { user_id: t.user_id, cents, from: t.chain ? t.chain.from : null };
     });
+    // "Confiar en esta billetera": sus próximos pagos de ESTE revendedor se aprueban solos
+    if (approve && trust && r.from) {
+      const w = await C.wallets.findOne({ _id: r.from });
+      if (!w) { try { await C.wallets.insertOne({ _id: r.from, user_id: r.user_id, created_at: now(), by: admin.username }); trusted = true; } catch (e) { if (!isDup(e)) throw e; } }
+      else trusted = w.user_id === r.user_id;
+    }
     TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${(r.cents / 100).toFixed(2)} USDT (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
-  send(res, 200, { ok: true });
+  send(res, 200, { ok: true, trusted });
+});
+route('GET', '/api/admin/wallets', 'admin', async (req, res) => {
+  const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
+  send(res, 200, (await C.wallets.find({}).sort({ created_at: -1 }).toArray()).map(w => ({ address: w._id, username: us.get(w.user_id), created_at: fmt(w.created_at) })));
+});
+route('POST', '/api/admin/wallet-remove', 'admin', async (req, res, _u, b) => {
+  await C.wallets.deleteOne({ _id: String(b.address || '').toLowerCase() }); send(res, 200, { ok: true });
 });
 
 // ---------- Reportes de ganancia ----------
@@ -635,7 +732,7 @@ route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
 });
 route('GET', '/api/admin/backup', 'admin', async (req, res) => {
   const out = { exported_at: new Date().toISOString(), version: 1 };
-  for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests', 'counters', 'kv']) out[n] = await C[n].find({}).toArray();
+  for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests', 'wallets', 'counters', 'kv']) out[n] = await C[n].find({}).toArray();
   for (const r of out.topup_requests) r.image = r.image ? '(imagen omitida)' : null; // las fotos harían el archivo enorme
   const name = 'respaldo-panel-' + new Date().toISOString().slice(0, 10) + '.json';
   res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
@@ -802,6 +899,8 @@ const server = http.createServer(async (req, res) => {
   if (MODE === 'real') provider.ping().then(() => console.log('Llave de Central One: OK'), e => console.error('ATENCIÓN: la llave de Central One no funciona:', e.message));
   setTimeout(syncSafe, 500);
   TG.start();
+  if (BSC.enabled()) console.log('Depósitos USDT BEP20 automáticos: activos'); else if (process.env.USDT_WALLET && !BSC.walletOk()) console.error('USDT_WALLET no es una dirección BEP20 válida (0x + 40 caracteres)');
+  setInterval(() => recheckDeposits().catch(e => console.error('depósitos', e.message)), 30000);
   setInterval(() => checkLowBalance().catch(e => console.error('saldo bajo', e.message)), 10 * 60 * 1000);
   setTimeout(() => checkLowBalance().catch(() => {}), 20000);
   setInterval(syncSafe, 15 * 60 * 1000); // el catálogo se actualiza cada 15 min (límite: 60 peticiones/min)
