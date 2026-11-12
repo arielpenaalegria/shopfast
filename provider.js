@@ -159,12 +159,12 @@ const MOCK_CATALOG = [
   { product_id: 'aaaaaaaa-0000-4000-8000-000000000003', sku: 'MOCK-GC-1', name: 'Gift card (simulada)', category: 'gift_card', product_type: 'gift_card', product_family_name: 'Gift card', currency: 'USD', reseller_price: '12.3400', status: 'active', requires_target: false, target_fields: [], target_schema: [], in_stock: true, available_stock: 100, price_updated_at: '2026-01-01T00:00:00Z' },
 ];
 // Catálogo simulado grande (más de 60 productos) para comprobar que no se corta y que se agrupa por juego
-for (const [fam, reg, n] of [['Free Fire (EU)', 'EU', 40], ['Free Fire LATAM', 'LATAM', 30]])
+for (const [fam, reg, n] of [['Free Fire', 'ID', 12], ['Free Fire', 'BR', 10], ['Free Fire', 'LATAM', 8], ['Free Fire', 'GLOBAL', 5]])
   for (let k = 1; k <= n; k++) MOCK_CATALOG.push({ product_id: `bbbbbbbb-${reg}-4000-8000-${String(k).padStart(12, '0')}`, sku: `MOCK-FF-${reg}-${k}`,
-    name: `${fam} · ${k * 100} Diamantes`, category: 'gaming_topup', product_type: 'game_topup', product_family_name: fam, currency: 'USD',
+    name: reg === 'GLOBAL' ? `${fam} · ${k * 100} Diamantes` : `${fam} (${reg}) · ${k * 100} Diamantes`, region: reg, category: 'gaming_topup', product_type: 'game_topup', product_family_name: fam, currency: 'USD',
     reseller_price: (k * 0.9).toFixed(4), status: 'active', requires_target: true, target_fields: ['game_user_id'],
     target_schema: [{ key: 'game_user_id', label: 'ID de jugador', type: 'text', options: null }], in_stock: true, available_stock: null, price_updated_at: '2026-01-01T00:00:00Z' });
-MOCK_CATALOG.push({ product_id: 'cccccccc-0000-4000-8000-000000000001', sku: 'MOCK-FF-LATAM-PIN', name: 'Free Fire LATAM · 100 Diamantes (código)', category: 'gift_card', product_type: 'gift_card', product_family_name: 'Free Fire LATAM', currency: 'USD', reseller_price: '0.9500', status: 'active', requires_target: false, target_fields: [], target_schema: [], in_stock: true, available_stock: 50, price_updated_at: '2026-01-01T00:00:00Z' });
+MOCK_CATALOG.push({ product_id: 'cccccccc-0000-4000-8000-000000000001', sku: 'MOCK-FF-LATAM-PIN', name: 'Free Fire (LATAM) · 100 Diamantes (código)', category: 'gift_card', product_type: 'gift_card', product_family_name: 'Free Fire', currency: 'USD', reseller_price: '0.9500', status: 'active', requires_target: false, target_fields: [], target_schema: [], in_stock: true, available_stock: 50, price_updated_at: '2026-01-01T00:00:00Z' });
 const mock = {
   async getCatalog() { return MOCK_CATALOG.map(normalizeItem); },
   async createOrder({ catalogItemId, targetPayload, idempotencyKey }) {

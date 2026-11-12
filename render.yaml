@@ -27,3 +27,5 @@ services:
         sync: false
       - key: WEBHOOK_SECRET
         sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false

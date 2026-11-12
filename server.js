@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { C, connect, nextId, withTx, fmt, isDup } = require('./db');
 const A = require('./auth');
 const { provider, ProviderError, MODE, parseE4 } = require('./provider');
+const TG = require('./telegram');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -13,6 +14,15 @@ const PUBLIC = path.join(__dirname, 'public');
 // Todo con enteros: nunca se usan decimales flotantes para dinero.
 const priceCents = (costE4, markupPct) => Math.ceil(costE4 * (10000 + Math.round(markupPct * 100)) / 1e6);
 const e4ToStr = n => (n / 10000).toFixed(4);
+/** Precio final para un revendedor, en centavos de USDT:
+ *  1) Si el admin puso PRECIO FIJO al paquete y está por encima del costo, se usa ese.
+ *  2) Si no: costo + margen % del revendedor, y nunca menos que costo + su ganancia mínima por recarga.
+ *  Nunca se vende por debajo del costo. */
+function priceFor(p, u) {
+  const costC = Math.ceil(p.price_e4 / 100);
+  if (p.fixed_price_cents && p.fixed_price_cents > costC) return p.fixed_price_cents;
+  return Math.max(priceCents(p.price_e4, u.markup_pct || 0), costC + (u.min_margin_cents || 0));
+}
 const now = () => new Date();
 const kvSet = (k, v) => C.kv.updateOne({ _id: k }, { $set: { value: String(v), updated_at: now() } }, { upsert: true });
 const kvGet = async k => { const r = await C.kv.findOne({ _id: k }); return r ? { value: r.value, updated_at: fmt(r.updated_at) } : null; };
@@ -22,10 +32,10 @@ function send(res, code, obj, headers = {}) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(obj));
 }
-function readBody(req) {
+function readBody(req, max = 20000) {
   return new Promise((resolve, reject) => {
     let s = '';
-    req.on('data', c => { s += c; if (s.length > 20000) { reject(new Error('Cuerpo demasiado grande')); req.destroy(); } });
+    req.on('data', c => { s += c; if (s.length > max) { reject(new Error('Cuerpo demasiado grande')); req.destroy(); } });
     req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch { reject(new Error('JSON inválido')); } });
   });
 }
@@ -73,12 +83,12 @@ async function availableProducts(onlyId) {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   return ps.map(p => ({ p, c: cs.get(p.catalog_item_id) }))
     .filter(({ c }) => c && c.in_catalog === 1 && c.price_e4 != null && c.in_stock === 1 && c.requires_target === 1)
-    .map(({ p, c }) => ({ id: p._id, name: p.name, family: c.family_name || 'Otros', variant: variantOf(c), product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
+    .map(({ p, c }) => ({ id: p._id, name: p.name, fixed_price_cents: p.fixed_price_cents || null, family: c.family_name || 'Otros', variant: variantOf(c), product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
 }
 
 route('GET', '/api/products', 'reseller', async (req, res, u) =>
   send(res, 200, (await availableProducts()).sort((a, b) => a.name.localeCompare(b.name)).map(p => ({
-    id: p.id, name: p.name, family: p.family, variant: p.variant, price: priceCents(p.price_e4, u.markup_pct) / 100, fields: p.target_schema,
+    id: p.id, name: p.name, family: p.family, variant: p.variant, price: priceFor(p, u) / 100, fields: p.target_schema,
   }))));
 
 /** Valida los datos del destino contra el target_schema del producto (nunca fijos en el código).
@@ -131,7 +141,7 @@ route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
   const b = buildPayload(p, body);
   if (b.error) return send(res, 400, { error: b.error });
   const payload = b.payload;
-  const price = priceCents(p.price_e4, u.markup_pct);
+  const price = priceFor(p, u);
   const display = Object.values(payload).join(' · ');
 
   // 1) Cobrar y crear el pedido en una sola transacción (no hay doble gasto)
@@ -159,8 +169,8 @@ route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
 });
 
 /** Cierra un pedido UNA sola vez (el estado se comprueba dentro de la transacción: no hay doble reembolso). */
-function settle(orderId, outcome, detail, failureCode) {
-  return withTx(async s => {
+async function settle(orderId, outcome, detail, failureCode) {
+  const done = await withTx(async s => {
     const o = await C.orders.findOne({ _id: orderId, status: { $in: ['pending', 'processing', 'unknown'] } }, { session: s });
     if (!o) return false;
     const set = { status: outcome, updated_at: now() };
@@ -175,6 +185,17 @@ function settle(orderId, outcome, detail, failureCode) {
     }
     return true;
   });
+  if (done) notifyOrder(orderId).catch(e => console.error('aviso', e.message));
+  return done;
+}
+
+/** Aviso por Telegram al revendedor (y al admin si queda para revisar). */
+async function notifyOrder(orderId) {
+  const o = await C.orders.findOne({ _id: orderId }); if (!o) return;
+  const line = `${o.product_name} → ${o.target}`;
+  if (o.status === 'completed') await TG.notifyUser(o.user_id, `✅ Recarga #${o._id} completada\n${line}\n${(o.price_cents / 100).toFixed(2)} USDT`);
+  else if (o.status === 'failed') await TG.notifyUser(o.user_id, `❌ Recarga #${o._id} fallida\n${line}\nSe devolvió el saldo.`);
+  else if (o.status === 'unknown') await TG.notifyAdmins(`⚠️ Pedido #${o._id} para revisar\n${line}\n${o.detail || ''}`);
 }
 
 /** Cobra otra vez un pedido que ya se había reembolsado. Devuelve false si el subrevendedor no tiene saldo, null si no aplica. */
@@ -187,7 +208,7 @@ function chargeAgain(orderId, note) {
     await ledger(s, o.user_id, -o.price_cents, 'order', String(orderId), note);
     await C.orders.updateOne({ _id: orderId }, { $set: { status: 'completed', refunded: 0, detail: note, updated_at: now() } }, { session: s });
     return true;
-  });
+  }).then(r => { if (r) notifyOrder(orderId).catch(() => {}); return r; });
 }
 
 /** Central One puede entregar DESPUÉS de haber marcado el pedido como fallido ("order.failed no siempre es definitivo").
@@ -223,12 +244,13 @@ async function submitOrder(orderId) {
     }
   }
   if (last instanceof ProviderError && last.definitive) {
-    if (last.code === 'insufficient_balance') await kvSet('balance_low', '1'); // el admin ve el aviso en su panel
+    if (last.code === 'insufficient_balance') { await kvSet('balance_low', '1'); lowBalanceAlert('Un pedido se rechazó por saldo insuficiente en Central One.'); } // el admin ve el aviso en su panel
     await settle(o._id, 'failed', last.message, last.code);
     return { status: 'failed' };
   }
   // Resultado incierto: NO reembolsar. Queda para reintento seguro / revisión del admin.
   await upOrder(o._id, { status: 'unknown', detail: String(last && last.message) });
+  notifyOrder(o._id).catch(() => {});
   return { status: 'unknown' };
 }
 
@@ -297,7 +319,7 @@ const REASONS = {
 };
 route('GET', '/api/orders', 'reseller', async (req, res, u) =>
   send(res, 200, (await C.orders.find({ user_id: u.id }).sort({ _id: -1 }).limit(100).toArray()).map(o => ({
-    id: o._id, product_name: o.product_name, target: o.target, price: o.price_cents / 100, status: o.status, created_at: fmt(o.created_at),
+    id: o._id, product_id: o.product_id, target_payload: o.target_payload, product_name: o.product_name, target: o.target, price: o.price_cents / 100, status: o.status, created_at: fmt(o.created_at),
     reason: o.status === 'failed' ? (REASONS[o.failure_code] || 'No se pudo entregar la recarga. Se devolvió tu saldo.') : null,
   }))));
 
@@ -308,7 +330,7 @@ route('GET', '/api/ledger', 'reseller', async (req, res, u) =>
 // --- Admin ---
 route('GET', '/api/admin/users', 'admin', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
-    .map(u => ({ id: u._id, username: u.username, balance: u.balance_cents / 100, markup_pct: u.markup_pct, active: u.active, created_at: fmt(u.created_at) }))));
+    .map(u => ({ id: u._id, username: u.username, balance: u.balance_cents / 100, markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, created_at: fmt(u.created_at) }))));
 
 route('POST', '/api/admin/users', 'admin', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
@@ -350,6 +372,11 @@ route('POST', '/api/admin/user-update', 'admin', async (req, res, _u, b) => {
     if (!(m >= 0 && m <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
     set.markup_pct = m;
   }
+  if (b.min_margin !== undefined) {
+    const c = toCents(b.min_margin);
+    if (!(c >= 0 && c <= 100000)) return send(res, 400, { error: 'Ganancia mínima inválida' });
+    set.min_margin_cents = c;
+  }
   if (b.password) {
     if (String(b.password).length < 8) return send(res, 400, { error: 'Contraseña de 8+ caracteres' });
     set.password_hash = A.hashPassword(String(b.password));
@@ -376,7 +403,7 @@ async function providerBalance() {
   catch (e) { balCache = { at: Date.now(), v: null, err: e.message }; }
   return balCache;
 }
-route('GET', '/api/admin/status', 'admin', async (req, res) => {
+route('GET', '/api/admin/status', 'admin', async (req, res, _u) => {
   const b = await providerBalance(), last = await kvGet('provider_balance'), low = await kvGet('balance_low'),
     sync = await kvGet('catalog_synced'), wt = await kvGet('webhook_test');
   send(res, 200, {
@@ -387,6 +414,8 @@ route('GET', '/api/admin/status', 'admin', async (req, res) => {
     catalog_synced_at: sync ? sync.updated_at : null,
     webhooks: !!process.env.WEBHOOK_SECRET,
     webhook_test_at: wt ? wt.updated_at : null,
+    telegram: TG.enabled(), telegram_linked: !!(await C.users.findOne({ _id: _u.id })).telegram_chat_id,
+    low_balance_threshold: Number(((await kvGet('low_balance_threshold')) || {}).value || 0),
   });
 });
 
@@ -443,7 +472,7 @@ route('GET', '/api/admin/products', 'admin', async (req, res) => {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   send(res, 200, ps.filter(p => cs.has(p.catalog_item_id)).map(p => {
     const c = cs.get(p.catalog_item_id);
-    return { id: p._id, name: p.name, family: c.family_name || 'Otros', variant: variantOf(c), active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
+    return { id: p._id, name: p.name, fixed_price: p.fixed_price_cents ? p.fixed_price_cents / 100 : null, family: c.family_name || 'Otros', variant: variantOf(c), active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
       cost: c.price_e4 === null ? null : e4ToStr(c.price_e4) };
   }));
 });
@@ -463,6 +492,10 @@ route('POST', '/api/admin/products', 'admin', async (req, res, _u, b) => {
 route('POST', '/api/admin/product-update', 'admin', async (req, res, _u, b) => {
   const id = Number(b.id), set = {};
   if (b.active !== undefined) set.active = b.active ? 1 : 0;
+  if (b.fixed_price !== undefined) {
+    if (b.fixed_price === null || b.fixed_price === '') set.fixed_price_cents = null;
+    else { const c = toCents(b.fixed_price); if (!(c > 0 && c <= 10000000)) return send(res, 400, { error: 'Precio inválido' }); set.fixed_price_cents = c; }
+  }
   if (b.name !== undefined) {
     const n = String(b.name).trim();
     if (!n || n.length > 80) return send(res, 400, { error: 'Nombre inválido' });
@@ -498,6 +531,134 @@ route('GET', '/api/admin/provider-balance', 'admin', async (req, res) => {
   try { send(res, 200, await provider.getBalance()); }
   catch (e) { send(res, 502, { error: e.message }); }
 });
+
+
+// ---------- Telegram ----------
+route('POST', '/api/telegram-link', 'any', async (req, res, u) => {
+  const url = await TG.linkFor(u.id);
+  if (!url) return send(res, 400, { error: 'Telegram no está configurado en el servidor (falta TELEGRAM_BOT_TOKEN)' });
+  send(res, 200, { url });
+});
+route('POST', '/api/telegram-unlink', 'any', async (req, res, u) => {
+  await C.users.updateOne({ _id: u.id }, { $set: { telegram_chat_id: null } }); send(res, 200, { ok: true });
+});
+route('GET', '/api/me-extra', 'any', async (req, res, u) => {
+  const d = await C.users.findOne({ _id: u.id });
+  send(res, 200, { telegram: TG.enabled(), telegram_linked: !!d.telegram_chat_id });
+});
+
+// ---------- Solicitudes de saldo (con foto del comprobante) ----------
+const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
+  const cents = toCents(b.amount);
+  if (!(cents >= 100 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido (mínimo 1 USDT)' });
+  const img = b.image ? String(b.image) : null;
+  if (img && (img.length > 2400000 || !IMG_RE.test(img))) return send(res, 400, { error: 'La imagen no es válida o es muy grande' });
+  if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending' }) >= 3) return send(res, 429, { error: 'Ya tienes 3 solicitudes pendientes. Espera a que el admin las revise.' });
+  const id = await nextId('topup_requests');
+  await C.topup_requests.insertOne({ _id: id, user_id: u.id, amount_cents: cents, note: String(b.note || '').slice(0, 300), image: img,
+    status: 'pending', admin_note: null, approved_cents: null, created_at: now(), decided_at: null });
+  TG.notifyAdmins(`💰 Solicitud de saldo #${id}\n${u.username}: ${(cents / 100).toFixed(2)} USDT${b.note ? '\n' + String(b.note).slice(0, 300) : ''}`).catch(() => {});
+  send(res, 201, { ok: true, id });
+});
+const trOut = (r, withImage) => ({ id: r._id, amount: r.amount_cents / 100, approved: r.approved_cents == null ? null : r.approved_cents / 100, note: r.note, status: r.status,
+  admin_note: r.admin_note, has_image: !!r.image, image: withImage ? r.image : undefined, created_at: fmt(r.created_at), decided_at: fmt(r.decided_at) });
+route('GET', '/api/topup-requests', 'reseller', async (req, res, u) =>
+  send(res, 200, (await C.topup_requests.find({ user_id: u.id }).sort({ _id: -1 }).limit(20).toArray()).map(r => trOut(r, false))));
+
+route('GET', '/api/admin/topup-requests', 'admin', async (req, res) => {
+  const rs = await C.topup_requests.find({}).sort({ _id: -1 }).limit(60).toArray();
+  const us = new Map((await C.users.find({ _id: { $in: [...new Set(rs.map(r => r.user_id))] } }).toArray()).map(x => [x._id, x.username]));
+  send(res, 200, rs.map(r => ({ ...trOut(r, false), username: us.get(r.user_id) })));
+});
+route('GET', '/api/admin/topup-image', 'admin', async (req, res) => {
+  const r = await C.topup_requests.findOne({ _id: Number(new URL(req.url, 'http://x').searchParams.get('id')) });
+  send(res, 200, { image: r ? r.image : null });
+});
+route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => {
+  const id = Number(b.id), approve = !!b.approve;
+  try {
+    const r = await withTx(async s => {
+      const t = await C.topup_requests.findOne({ _id: id, status: 'pending' }, { session: s });
+      if (!t) throw httpErr(404, 'Solicitud no encontrada o ya revisada');
+      const cents = approve ? (b.amount !== undefined ? toCents(b.amount) : t.amount_cents) : null;
+      if (approve && !(cents > 0 && cents <= 10000000)) throw httpErr(400, 'Monto inválido');
+      await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
+      if (approve) {
+        await addBalance(s, t.user_id, cents);
+        await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`);
+      }
+      return { user_id: t.user_id, cents };
+    });
+    TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${(r.cents / 100).toFixed(2)} USDT (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
+  } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
+  send(res, 200, { ok: true });
+});
+
+// ---------- Reportes de ganancia ----------
+route('GET', '/api/admin/report', 'admin', async (req, res) => {
+  const period = new URL(req.url, 'http://x').searchParams.get('period') || 'day';
+  const d = new Date(); d.setUTCHours(0, 0, 0, 0);
+  if (period === 'week') d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); // lunes
+  if (period === 'month') d.setUTCDate(1);
+  const rows = await C.orders.find({ status: 'completed', created_at: { $gte: d } }).toArray();
+  const users = new Map((await C.users.find({ role: 'reseller' }).toArray()).map(u => [u._id, u.username]));
+  const by = new Map(), prod = new Map();
+  let sold = 0, cost = 0;
+  for (const o of rows) {
+    const c = Math.round(o.cost_e4 / 100); sold += o.price_cents; cost += c;
+    const x = by.get(o.user_id) || { username: users.get(o.user_id) || '#' + o.user_id, count: 0, sold: 0, profit: 0 };
+    x.count++; x.sold += o.price_cents; x.profit += o.price_cents - c; by.set(o.user_id, x);
+    const y = prod.get(o.product_name) || { name: o.product_name, count: 0, profit: 0 }; y.count++; y.profit += o.price_cents - c; prod.set(o.product_name, y);
+  }
+  // últimos 14 días, para la gráfica de barras
+  const since = new Date(Date.now() - 13 * 864e5); since.setUTCHours(0, 0, 0, 0);
+  const days = new Map(); for (let i = 0; i < 14; i++) days.set(new Date(since.getTime() + i * 864e5).toISOString().slice(0, 10), 0);
+  for (const o of await C.orders.find({ status: 'completed', created_at: { $gte: since } }).toArray()) {
+    const k = o.created_at.toISOString().slice(0, 10); if (days.has(k)) days.set(k, days.get(k) + o.price_cents - Math.round(o.cost_e4 / 100));
+  }
+  const c2 = v => v / 100;
+  send(res, 200, { from: fmt(d), count: rows.length, sold: c2(sold), cost: c2(cost), profit: c2(sold - cost),
+    resellers: [...by.values()].sort((a, b) => b.profit - a.profit).map(x => ({ ...x, sold: c2(x.sold), profit: c2(x.profit) })),
+    products: [...prod.values()].sort((a, b) => b.profit - a.profit).slice(0, 10).map(x => ({ ...x, profit: c2(x.profit) })),
+    daily: [...days].map(([day, p]) => ({ day, profit: c2(p) })) });
+});
+
+// ---------- Ajustes y respaldo ----------
+route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
+  if (b.low_balance_threshold !== undefined) {
+    const n = Number(b.low_balance_threshold);
+    if (!(n >= 0 && n <= 100000)) return send(res, 400, { error: 'Valor inválido' });
+    await kvSet('low_balance_threshold', n);
+  }
+  send(res, 200, { ok: true });
+});
+route('GET', '/api/admin/backup', 'admin', async (req, res) => {
+  const out = { exported_at: new Date().toISOString(), version: 1 };
+  for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests', 'counters', 'kv']) out[n] = await C[n].find({}).toArray();
+  for (const r of out.topup_requests) r.image = r.image ? '(imagen omitida)' : null; // las fotos harían el archivo enorme
+  const name = 'respaldo-panel-' + new Date().toISOString().slice(0, 10) + '.json';
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(out, null, 1));
+});
+
+// ---------- Alerta de saldo bajo en Central One ----------
+let lastLowAlert = 0;
+async function lowBalanceAlert(reason) {
+  if (Date.now() - lastLowAlert < 3 * 3600e3) return; // máximo una alerta cada 3 horas
+  lastLowAlert = Date.now();
+  await TG.notifyAdmins(`🔴 Saldo bajo en Central One\n${reason}\nRecarga para no rechazar pedidos.`).catch(() => {});
+}
+async function checkLowBalance() {
+  const th = Number(((await kvGet('low_balance_threshold')) || {}).value || 0);
+  if (!th) return;
+  balCache.at = 0;
+  const b = await providerBalance();
+  if (b.v && b.v.availableE4 !== null && b.v.availableE4 < th * 10000) {
+    await kvSet('balance_low', '1');
+    await lowBalanceAlert(`Disponible: ${e4ToStr(b.v.availableE4)} USDT (tu alerta: ${th}).`);
+  } else if (b.v && b.v.availableE4 !== null) await kvSet('balance_low', '0');
+}
 
 // ---------- catálogo ----------
 async function syncCatalog() {
@@ -575,7 +736,7 @@ async function processEvent(ev) {
   if (ev.balance && await staleEvent('balance', ev)) return;
   balCache.at = 0; // fuerza leer GET /balance (fuente de verdad) la próxima vez
   if (ev.balance && ev.balance.available !== undefined) await kvSet('provider_balance', ev.balance.available);
-  if (name === 'balance.low') await kvSet('balance_low', '1');
+  if (name === 'balance.low') { await kvSet('balance_low', '1'); lowBalanceAlert('Central One avisa que tu saldo está bajo.'); }
   else if (name === 'deposit.approved' || name === 'balance.credited') await kvSet('balance_low', '0');
 }
 
@@ -592,10 +753,10 @@ async function bootstrapAdmin() {
 }
 
 // ---------- servidor ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg', '.png': 'image/png' };
 const SEC = {
   'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
 };
 
 const server = http.createServer(async (req, res) => {
@@ -609,7 +770,7 @@ const server = http.createServer(async (req, res) => {
       let body = {};
       if (req.method === 'POST') {
         if (!(req.headers['content-type'] || '').startsWith('application/json')) return send(res, 415, { error: 'Content-Type debe ser JSON' });
-        body = await readBody(req);
+        body = await readBody(req, url.pathname === '/api/topup-requests' ? 2500000 : 20000); // la foto del comprobante va en la solicitud de saldo
       }
       let user = null;
       if (r.role) {
@@ -640,5 +801,8 @@ const server = http.createServer(async (req, res) => {
   setTimeout(recoverPending, 5000);
   if (MODE === 'real') provider.ping().then(() => console.log('Llave de Central One: OK'), e => console.error('ATENCIÓN: la llave de Central One no funciona:', e.message));
   setTimeout(syncSafe, 500);
+  TG.start();
+  setInterval(() => checkLowBalance().catch(e => console.error('saldo bajo', e.message)), 10 * 60 * 1000);
+  setTimeout(() => checkLowBalance().catch(() => {}), 20000);
   setInterval(syncSafe, 15 * 60 * 1000); // el catálogo se actualiza cada 15 min (límite: 60 peticiones/min)
 })().catch(e => { console.error('No se pudo iniciar:', e.message); process.exit(1); });

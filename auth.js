@@ -36,7 +36,7 @@ async function readSession(req) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   if (Number(parts[1]) < Date.now()) return null;
   const d = await C.users.findOne({ _id: Number(parts[0]) });
-  return d && d.active ? { id: d._id, username: d.username, role: d.role, balance_cents: d.balance_cents, markup_pct: d.markup_pct, active: d.active } : null;
+  return d && d.active ? { id: d._id, username: d.username, role: d.role, balance_cents: d.balance_cents, markup_pct: d.markup_pct, min_margin_cents: d.min_margin_cents || 0, active: d.active } : null;
 }
 function cookieHeader(value, maxAge) {
   const secure = process.env.COOKIE_SECURE === 'true' ? '; Secure' : '';

@@ -21,14 +21,15 @@ async function connect() {
   client = new MongoClient(uri || 'memory://', { serverSelectionTimeoutMS: 20000 });
   await client.connect();
   const db = client.db(process.env.MONGODB_DB || 'panel');
-  for (const n of ['users', 'ledger', 'catalog', 'products', 'orders', 'kv', 'webhook_events', 'counters']) C[n] = db.collection(n);
+  for (const n of ['users', 'ledger', 'catalog', 'products', 'orders', 'kv', 'webhook_events', 'counters', 'topup_requests']) C[n] = db.collection(n);
 
   await C.users.createIndex({ username_lc: 1 }, { unique: true });
   await C.products.createIndex({ catalog_item_id: 1 }, { unique: true });
   await C.orders.createIndex({ user_id: 1, _id: -1 });
   await C.orders.createIndex({ status: 1 });
   await C.ledger.createIndex({ user_id: 1, _id: -1 });
-  for (const n of ['users', 'ledger', 'products', 'orders'])
+  await C.topup_requests.createIndex({ user_id: 1, _id: -1 });
+  for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests'])
     await C.counters.updateOne({ _id: n }, { $setOnInsert: { seq: 0 } }, { upsert: true });
 }
 
