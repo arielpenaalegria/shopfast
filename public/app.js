@@ -1,13 +1,4 @@
 'use strict';
-// Estilos de las tarjetas de región (aquí para no tener que tocar index.html)
-document.head.append(Object.assign(document.createElement('style'), { textContent: `
-.reg{display:flex;align-items:center;gap:12px;width:100%;background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:8px;text-align:left;font-weight:400}
-.code{display:inline-flex;align-items:center;justify-content:center;min-width:52px;height:42px;padding:0 10px;border-radius:10px;background:#f1f5f9;font-weight:800;letter-spacing:.5px;font-size:.9rem}
-.rn{flex:1;display:flex;flex-direction:column;min-width:0}.rn b{font-size:1.02rem}.chev{font-size:1.6rem;color:var(--mut);line-height:1}
-details.regd{border:1px solid var(--line);border-radius:12px;margin:8px 0;padding:0 10px}
-details.regd summary{background:none!important;border:0!important;font-weight:400;display:flex;align-items:center;gap:12px;padding:10px 0;cursor:pointer;list-style:none}details.regd summary::-webkit-details-marker{display:none}
-details.regd[open] .chev{transform:rotate(90deg)}
-` }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -26,22 +17,57 @@ async function api(method, path, body) {
   return d;
 }
 const msg = (box, text, cls) => { box.replaceChildren(el('div', { class: 'msg ' + cls }, text)); };
-const money = n => '$' + Number(n).toFixed(2);
+const usdt = n => Number(n).toFixed(2) + ' USDT';          // saldos y precios de revendedores
+const usd = n => 'US$ ' + Number(n).toFixed(2);             // saldo de Central One
 const STATUS = { completed: 'Completada', failed: 'Fallida', pending: 'Enviando', processing: 'En proceso', unknown: 'Verificando' };
-const tag = s => el('span', { class: 'tag ' + s }, STATUS[s] || s);
+const REQ = { pending: 'Pendiente', approved: 'Aprobada', rejected: 'Rechazada' };
+const tag = (s, map = STATUS) => el('span', { class: 'tag ' + s }, map[s] || s);
 const card = (title, ...kids) => el('div', { class: 'card' }, title ? el('h2', {}, title) : null, ...kids);
 const groupBy = (arr, f) => arr.reduce((m, x) => { const k = f(x); (m.get(k) || m.set(k, []).get(k)).push(x); return m; }, new Map());
 let timer = null, flash = null;
+
 const REG = { ID: 'Indonesia', BR: 'Brasil', EU: 'Europa', LATAM: 'Latinoamérica', US: 'Estados Unidos', NA: 'Norteamérica', SG: 'Singapur', MY: 'Malasia',
-  TH: 'Tailandia', VN: 'Vietnam', PH: 'Filipinas', IN: 'India', MENA: 'Medio Oriente y Norte de África', ME: 'Medio Oriente', TW: 'Taiwán', KR: 'Corea', JP: 'Japón', RU: 'Rusia', TR: 'Turquía', SA: 'Arabia Saudita', GLOBAL: '' };
+  TH: 'Tailandia', VN: 'Vietnam', PH: 'Filipinas', IN: 'India', MENA: 'Medio Oriente y Norte de África', ME: 'Medio Oriente', TW: 'Taiwán', KR: 'Corea',
+  JP: 'Japón', RU: 'Rusia', TR: 'Turquía', SA: 'Arabia Saudita', GLOBAL: '' };
 const regName = v => REG[String(v).toUpperCase()] ?? '';
 const regLabel = v => regName(v) ? `${regName(v)} (${v})` : v;
-// Tarjeta de región como en el portal: [CÓDIGO] Nombre · N opciones  >
-const regionCard = (code, sub, onclick, right) => el('button', { class: 'reg', onclick },
+const shortName = n => { const i = n.indexOf(' · '); return i > 0 ? n.slice(i + 3) : n; }; // "Free Fire (BR) · 100 Diamantes" -> "100 Diamantes"
+const regionCard = (code, sub, onclick) => el('button', { class: 'reg', onclick },
   el('span', { class: 'code' }, code), el('span', { class: 'rn' }, regName(code) ? el('b', {}, regName(code)) : null, el('span', { class: 'mut' }, sub)),
-  right || el('span', { class: 'chev' }, '›'));
-// "Free Fire (BR) · 100 Diamantes" -> "100 Diamantes"
-const shortName = n => { const i = n.indexOf(' · '); return i > 0 ? n.slice(i + 3) : n; };
+  el('span', { class: 'chev' }, '›'));
+
+/** Reduce la foto del comprobante (máx. 1280 px, JPEG) para que suba rápido aunque la conexión sea lenta. */
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.72));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer la imagen')); };
+    img.src = url;
+  });
+}
+
+/** Tarjeta para conectar Telegram y recibir avisos (admin y revendedores). */
+function telegramCard(extra, refresh) {
+  if (!extra.telegram) return null;
+  const box = el('div');
+  if (extra.telegram_linked) return card('Avisos por Telegram', el('div', { class: 'mut' }, '✓ Conectado. Te llegan los avisos a Telegram.'),
+    el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: async () => { await api('POST', '/api/telegram-unlink', {}); refresh(); } }, 'Desconectar')));
+  const b = el('button', { class: 'sm' }, 'Conectar Telegram');
+  b.onclick = async () => {
+    try {
+      const { url } = await api('POST', '/api/telegram-link', {});
+      box.replaceChildren(el('div', { class: 'msg ok' }, 'Abre el bot y pulsa "Iniciar". Luego vuelve aquí y recarga.'),
+        el('div', { class: 'acts' }, el('a', { href: url, target: '_blank', rel: 'noopener' }, el('button', { class: 'sm' }, 'Abrir Telegram')),
+          el('button', { class: 'sec sm', onclick: refresh }, 'Ya lo hice')));
+    } catch (e) { msg(box, e.message, 'err'); }
+  };
+  return card('Avisos por Telegram', el('div', { class: 'mut' }, 'Recibe un mensaje cuando una recarga se complete o falle y cuando te aprueben saldo.'), el('div', { class: 'acts' }, b), box);
+}
 
 function show(which) {
   clearTimeout(timer);
@@ -64,12 +90,15 @@ async function boot() {
   } catch { show('login'); }
 }
 
-/* =================== SUBREVENDEDOR =================== */
-const pick = { family: null, variant: null, product: null }; let scrollTo3 = false;
+/* =================== REVENDEDOR =================== */
+const pick = { family: null, variant: null, product: null, fill: null };
+let scrollTo3 = false, rtab = 'recargar';
 async function resellerView() {
   clearTimeout(timer);
-  const [me, products, orders, led] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'), api('GET', '/api/ledger')]);
+  const [me, products, orders, led, reqs, extra] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'),
+    api('GET', '/api/ledger'), api('GET', '/api/topup-requests'), api('GET', '/api/me-extra')]);
   const out = $('app'); out.replaceChildren();
+  const byId = new Map(products.map(p => [p.id, p]));
   const fams = groupBy(products, p => p.family);
   if (!fams.has(pick.family)) pick.family = fams.keys().next().value || null;
   const box = el('div'), vbox = el('div');
@@ -95,9 +124,10 @@ async function resellerView() {
       el('button', { class: 'ghost', onclick: () => { pick.variant = null; pick.product = null; renderBuy(); } }, '← Cambiar región')));
     const list = (vars.get(pick.variant) || []).slice().sort((a, b) => a.price - b.price);
     if (!list.some(p => p.id === pick.product)) pick.product = null;
-    buy.append(el('h3', {}, (vars.size > 1 ? '3' : '2') + '. Elige el paquete'),
+    const n = vars.size > 1 ? 3 : 2;
+    buy.append(el('h3', {}, n + '. Elige el paquete'),
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
-        shortName(p.name), el('b', {}, money(p.price))))));
+        shortName(p.name), el('b', {}, usdt(p.price))))));
     const p = list.find(x => x.id === pick.product);
     if (!p) return;
     const inputs = {};
@@ -107,6 +137,16 @@ async function resellerView() {
         : el('input', { placeholder: f.label, autocomplete: 'off', inputmode: /phone|tel|id/i.test(f.key) ? 'numeric' : null });
       inputs[f.key] = inp; return inp;
     });
+    const fillWith = t => { for (const [k, i] of Object.entries(inputs)) if (t && t[k] !== undefined) i.value = t[k]; };
+    if (pick.fill) { fillWith(pick.fill); pick.fill = null; }
+    // IDs usados antes en este mismo juego y región (los más recientes primero)
+    const seen = new Set(), recent = [];
+    for (const o of orders) {
+      const op = byId.get(o.product_id);
+      if (!op || op.family !== p.family || op.variant !== p.variant || !o.target_payload) continue;
+      const k = JSON.stringify(o.target_payload); if (seen.has(k)) continue;
+      seen.add(k); recent.push(o.target_payload); if (recent.length >= 6) break;
+    }
     const target = () => { const t = {}; for (const [k, i] of Object.entries(inputs)) t[k] = i.value; return t; };
     const vbtn = el('button', { class: 'sec' }, 'Verificar ID');
     vbtn.onclick = async () => {
@@ -119,10 +159,10 @@ async function resellerView() {
       } catch (e) { msg(vbox, e.message, 'err'); }
       setTimeout(() => { vbtn.disabled = false; }, 2000);
     };
-    const btn = el('button', {}, `Enviar recarga · ${money(p.price)}`);
+    const btn = el('button', {}, `Enviar · ${usdt(p.price)}`);
     btn.onclick = async () => {
       const t = target();
-      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\npor ${money(p.price)}?`)) return;
+      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\npor ${usdt(p.price)}?`)) return;
       btn.disabled = true;
       try {
         const d = await api('POST', '/api/orders', { product_id: p.id, target: t });
@@ -131,36 +171,95 @@ async function resellerView() {
       } catch (e) { flash = [e.message, 'err']; }
       resellerView();
     };
-    const step3 = el('h3', {}, (vars.size > 1 ? '4' : '3') + '. Datos del jugador · ' + shortName(p.name));
-    buy.append(step3, el('div', { class: 'row' }, ...fields), el('div', { class: 'row' }, vbtn, btn), vbox);
-    if (scrollTo3) { scrollTo3 = false; setTimeout(() => { step3.scrollIntoView({ behavior: 'smooth', block: 'start' }); fields[0] && fields[0].focus(); }, 50); }
+    const step3 = el('h3', {}, (n + 1) + '. Datos del jugador · ' + shortName(p.name));
+    buy.append(step3,
+      recent.length ? el('div', { class: 'recents' }, el('span', { class: 'mut', style: 'align-self:center' }, 'Recientes:'),
+        ...recent.map(t => el('button', { class: 'chip', onclick: () => fillWith(t) }, Object.values(t).join(' · ')))) : null,
+      el('div', { class: 'row' }, ...fields), el('div', { class: 'row' }, vbtn, btn), vbox);
+    if (scrollTo3) { scrollTo3 = false; setTimeout(() => { step3.scrollIntoView({ behavior: 'smooth', block: 'start' }); if (!recent.length && fields[0]) fields[0].focus(); }, 50); }
   };
-  renderBuy();
 
+  // "Repetir": vuelve a elegir el mismo paquete con los mismos datos
+  const repeat = o => {
+    const p = byId.get(o.product_id);
+    if (!p) return alert('Ese paquete ya no está disponible.');
+    Object.assign(pick, { family: p.family, variant: p.variant, product: p.id, fill: o.target_payload });
+    rtab = 'recargar'; scrollTo3 = true; resellerView();
+  };
+
+  // Pedir saldo con foto del comprobante
+  const reqBox = el('div');
+  const amount = el('input', { type: 'number', inputmode: 'decimal', min: '1', step: '0.01', placeholder: 'Monto en USDT' });
+  const note = el('input', { placeholder: 'Nota (red, hash o referencia del pago)' });
+  const file = el('input', { type: 'file', accept: 'image/*' });
+  const preview = el('div');
+  let image = null;
+  file.onchange = async () => {
+    image = null; preview.replaceChildren();
+    if (!file.files[0]) return;
+    try { image = await shrinkImage(file.files[0]); preview.append(el('img', { src: image, class: 'proof', alt: 'Comprobante' })); }
+    catch (e) { msg(reqBox, e.message, 'err'); }
+  };
+  const send = el('button', {}, 'Enviar solicitud');
+  send.onclick = async () => {
+    send.disabled = true;
+    try {
+      await api('POST', '/api/topup-requests', { amount: amount.value.replace(',', '.'), note: note.value, image });
+      flash = ['Solicitud enviada. El administrador la revisará y te abonará el saldo.', 'ok']; rtab = 'saldo'; resellerView(); return;
+    } catch (e) { msg(reqBox, e.message, 'err'); }
+    send.disabled = false;
+  };
+
+  const tabs = [['recargar', 'Recargar'], ['historial', 'Mis recargas'], ['saldo', 'Pedir saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', 'Cuenta']];
   out.append(
-    el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mi saldo'), el('div', { class: 'bal' }, money(me.balance)), el('div', { class: 'mut' }, 'Hola, ' + me.username)),
-    card('Nueva recarga', buy, box, el('div', { class: 'mut', style: 'margin-top:10px' }, 'Una recarga puede tardar desde minutos hasta un par de horas. No la repitas mientras esté "En proceso": podría llegar dos veces.')),
-    card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
-      el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null),
-      el('div', { class: 'r' }, el('div', {}, money(o.price)), tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')),
-    card('Movimientos de saldo', led.length ? el('div', { class: 'list' }, ...led.map(l => el('div', {},
-      el('div', { class: 'l' }, el('div', {}, { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' }[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
-      el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + money(l.amount))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
-  if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status))) timer = setTimeout(() => resellerView().catch(() => {}), 10000);
+    el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mi saldo'), el('div', { class: 'bal' }, Number(me.balance).toFixed(2), el('small', {}, 'USDT')),
+      el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo'))),
+    el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
+
+  if (rtab === 'recargar') {
+    renderBuy();
+    out.append(card('Nueva recarga', buy, box, el('div', { class: 'mut', style: 'margin-top:10px' }, 'Una recarga puede tardar desde minutos hasta un par de horas. No la repitas mientras esté "En proceso": podría llegar dos veces.')));
+  }
+  if (rtab === 'historial') {
+    out.append(box, card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
+      el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null,
+        byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null),
+      el('div', { class: 'r' }, el('div', {}, usdt(o.price)), tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')));
+  }
+  if (rtab === 'saldo') {
+    out.append(box,
+      card('Pedir saldo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Paga al administrador y envía aquí el monto con la captura del pago.'),
+        el('div', { class: 'row' }, amount), el('div', { class: 'row' }, note), el('div', { class: 'row' }, file), preview,
+        el('div', { class: 'acts' }, send), reqBox),
+      card('Mis solicitudes', reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => el('div', {},
+        el('div', { class: 'l' }, el('div', {}, `Solicitud #${r.id}`), el('div', { class: 'mut' }, r.created_at + (r.note ? ' · ' + r.note : '')),
+          r.admin_note ? el('div', { class: 'mut' }, 'Admin: ' + r.admin_note) : null),
+        el('div', { class: 'r' }, el('div', {}, usdt(r.approved ?? r.amount)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')),
+      card('Movimientos de saldo', led.length ? el('div', { class: 'list' }, ...led.map(l => el('div', {},
+        el('div', { class: 'l' }, el('div', {}, { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' }[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
+        el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + usdt(l.amount))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
+  }
+  if (rtab === 'cuenta') {
+    out.append(card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')));
+  }
+  if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) && rtab !== 'saldo') timer = setTimeout(() => resellerView().catch(() => {}), 10000);
 }
 
 /* =================== ADMIN =================== */
-let tab = 'resumen', catQuery = '';
+let tab = 'resumen', catQuery = '', period = 'day';
 async function adminView() {
   clearTimeout(timer);
   const out = $('app');
-  const [users, orders, prods, st] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/admin/orders'), api('GET', '/api/admin/products'), api('GET', '/api/admin/status')]);
+  const [users, orders, prods, st, reqs] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/admin/orders'), api('GET', '/api/admin/products'),
+    api('GET', '/api/admin/status'), api('GET', '/api/admin/topup-requests')]);
   const cat = tab === 'catalogo' ? await api('GET', '/api/admin/catalog?q=' + encodeURIComponent(catQuery)) : [];
+  const rep = tab === 'reportes' ? await api('GET', '/api/admin/report?period=' + period) : null;
   out.replaceChildren();
   const note = el('div');
-  const act = (label, fn, cls = 'sec') => el('button', { class: cls + ' sm', onclick: async () => { try { await fn(); await adminView(); } catch (e) { alert(e.message); } } }, label);
-  const pending = orders.filter(o => o.status === 'unknown').length;
-  const tabs = [['resumen', 'Resumen'], ['catalogo', 'Catálogo'], ['revendedores', 'Revendedores'], ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')]];
+  const act = (label, fn, cls = 'sec') => el('button', { class: cls + ' sm', onclick: async () => { try { await fn(); await adminView(); } catch (e) { if (e.message !== 'Cancelado') alert(e.message); } } }, label);
+  const pending = orders.filter(o => o.status === 'unknown').length, preq = reqs.filter(r => r.status === 'pending').length;
+  const tabs = [['resumen', 'Resumen'], ['saldo', 'Saldo' + (preq ? ` (${preq})` : '')], ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')],
+    ['reportes', 'Ganancias'], ['revendedores', 'Revendedores'], ['catalogo', 'Catálogo']];
   out.append(el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
   if (st.balance_low) out.append(el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'Tu saldo en Central One está bajo o no alcanzó para un pedido. Recarga para no rechazar pedidos.'));
 
@@ -168,19 +267,75 @@ async function adminView() {
     const today = new Date().toISOString().slice(0, 10);
     const done = orders.filter(o => o.status === 'completed' && o.created_at.startsWith(today));
     const pb = st.provider_balance;
+    const th = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: String(st.low_balance_threshold || ''), placeholder: 'Ej. 20' });
     out.append(
       el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Saldo en Central One' + (pb && !pb.live ? ' (último dato)' : '')),
-        el('div', { class: 'bal' }, pb ? 'US$ ' + Number(pb.available).toFixed(2) : '—'),
-        el('div', { class: 'mut' }, pb && pb.held !== null ? `Retenido en pedidos en curso: US$ ${Number(pb.held).toFixed(2)}` : (st.balance_error ? 'No se pudo leer el saldo en vivo' : ''))),
+        el('div', { class: 'bal' }, pb ? usd(pb.available) : '—'),
+        el('div', { class: 'mut' }, pb && pb.held !== null ? `Retenido en pedidos en curso: ${usd(pb.held)}` : (st.balance_error ? 'No se pudo leer el saldo en vivo' : ''))),
       card('Hoy', el('div', { class: 'stats' },
-        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Recargas completadas'), el('b', {}, String(done.length))),
-        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Vendido'), el('b', {}, money(done.reduce((s, o) => s + o.price, 0)))),
-        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Ganancia'), el('b', {}, money(done.reduce((s, o) => s + Number(o.margin), 0)))),
-        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Por revisar'), el('b', { style: pending ? 'color:var(--warn)' : '' }, String(pending))))),
+        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Recargas'), el('b', {}, String(done.length))),
+        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Vendido'), el('b', {}, usdt(done.reduce((s, o) => s + o.price, 0)))),
+        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Ganancia'), el('b', { style: 'color:var(--ok)' }, usdt(done.reduce((s, o) => s + Number(o.margin), 0)))),
+        el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Por revisar'), el('b', { style: pending + preq ? 'color:var(--warn)' : '' }, String(pending + preq))))),
+      card('Alerta de saldo bajo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te aviso por Telegram (y aquí arriba) cuando el saldo de Central One baje de este monto. 0 = desactivada.'),
+        el('div', { class: 'row' }, th, act('Guardar', () => api('POST', '/api/admin/settings', { low_balance_threshold: th.value.replace(',', '.') || 0 }), ''))),
+      telegramCard(st, adminView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'Desactivado. Para activarlo crea un bot con @BotFather y pon su token en la variable TELEGRAM_BOT_TOKEN de Render.')),
+      card('Respaldo', el('div', { class: 'mut' }, 'Descarga una copia de revendedores, saldos y pedidos. Hazlo cada semana y guárdala en un lugar seguro: contiene los datos de tus revendedores.'),
+        el('div', { class: 'acts' }, el('a', { href: '/api/admin/backup', download: '' }, el('button', { class: 'sm' }, '⬇ Descargar respaldo')))),
       card('Estado', el('div', { class: 'mut' }, 'Catálogo actualizado: ' + (st.catalog_synced_at ? st.catalog_synced_at + ' UTC' : 'todavía no')),
         el('div', { class: 'mut' }, 'Productos activos: ' + prods.filter(p => p.active).length + ' · Revendedores: ' + users.length),
         el('div', { class: 'mut' }, 'Webhooks: ' + (st.webhooks ? 'activos' + (st.webhook_test_at ? ' · última prueba ' + st.webhook_test_at + ' UTC' : '') : 'sin configurar (se usa consulta periódica)')),
         st.webhooks ? el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: async () => { try { await api('POST', '/api/admin/webhook-test', {}); msg(note, 'Prueba enviada. Recarga en unos segundos.', 'ok'); } catch (e) { msg(note, e.message, 'err'); } } }, 'Enviar aviso de prueba')) : null, note));
+  }
+
+  if (tab === 'saldo') {
+    const showImg = async (r, holder, b) => {
+      b.disabled = true;
+      try { const d = await api('GET', '/api/admin/topup-image?id=' + r.id); holder.replaceChildren(d.image ? el('img', { src: d.image, class: 'proof', alt: 'Comprobante' }) : el('div', { class: 'mut' }, 'Sin imagen')); }
+      catch (e) { alert(e.message); b.disabled = false; }
+    };
+    out.append(card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Revisa el comprobante, comprueba que el pago llegó y aprueba. Al aprobar se le suma el saldo al revendedor.'),
+      reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => {
+        const holder = el('div'), vb = el('button', { class: 'ghost' }, 'Ver comprobante');
+        vb.onclick = () => showImg(r, holder, vb);
+        return el('div', { style: 'display:block' },
+          el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
+            el('div', { class: 'l' }, el('div', {}, `${r.username} · #${r.id}`), el('div', { class: 'mut' }, r.created_at + (r.note ? ' · ' + r.note : '')),
+              r.admin_note ? el('div', { class: 'mut' }, 'Nota: ' + r.admin_note) : null),
+            el('div', { class: 'r' }, el('div', { style: 'font-weight:800' }, usdt(r.approved ?? r.amount)), tag(r.status, REQ))),
+          r.has_image ? vb : null, holder,
+          r.status === 'pending' ? el('div', { class: 'acts' },
+            act('Aprobar', async () => {
+              const a = prompt(`Monto a abonar a ${r.username} (USDT):`, r.amount.toFixed(2)); if (a === null) throw new Error('Cancelado');
+              await api('POST', '/api/admin/topup-decide', { id: r.id, approve: true, amount: a.replace(',', '.') });
+            }, ''),
+            act('Rechazar', async () => {
+              const m = prompt('Motivo (lo verá el revendedor):', ''); if (m === null) throw new Error('Cancelado');
+              await api('POST', '/api/admin/topup-decide', { id: r.id, approve: false, note: m });
+            }, 'red')) : null);
+      })) : el('div', { class: 'mut' }, 'No hay solicitudes.')));
+  }
+
+  if (tab === 'reportes' && rep) {
+    const max = Math.max(0.01, ...rep.daily.map(d => d.profit));
+    out.append(
+      el('div', { class: 'tabs' }, ...[['day', 'Hoy'], ['week', 'Esta semana'], ['month', 'Este mes']].map(([k, l]) =>
+        el('button', { class: k === period ? 'on' : '', onclick: () => { period = k; adminView(); } }, l))),
+      card('Ganancias', el('div', { class: 'mut' }, 'Desde ' + rep.from + ' UTC · solo recargas completadas'),
+        el('div', { class: 'stats', style: 'margin-top:10px' },
+          el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Recargas'), el('b', {}, String(rep.count))),
+          el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Vendido'), el('b', {}, usdt(rep.sold))),
+          el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Costo Central One'), el('b', {}, usdt(rep.cost))),
+          el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Ganancia'), el('b', { style: 'color:var(--ok)' }, usdt(rep.profit))))),
+      card('Ganancia de los últimos 14 días',
+        el('div', { class: 'bars' }, ...rep.daily.map(d => el('div', { style: `height:${Math.round(d.profit / max * 100)}%`, title: `${d.day}: ${usdt(d.profit)}` }))),
+        el('div', { class: 'bars-l' }, ...rep.daily.map(d => el('span', {}, d.day.slice(8))))),
+      card('Por revendedor', rep.resellers.length ? el('div', { class: 'list' }, ...rep.resellers.map(x => el('div', {},
+        el('div', { class: 'l' }, el('div', {}, x.username), el('div', { class: 'mut' }, `${x.count} recargas · vendió ${usdt(x.sold)}`)),
+        el('div', { class: 'r', style: 'font-weight:800;color:var(--ok)' }, usdt(x.profit))))) : el('div', { class: 'mut' }, 'Sin ventas en este periodo.')),
+      card('Productos que más ganancia dejan', rep.products.length ? el('div', { class: 'list' }, ...rep.products.map(x => el('div', {},
+        el('div', { class: 'l' }, el('div', {}, x.name), el('div', { class: 'mut' }, `${x.count} vendidos`)),
+        el('div', { class: 'r', style: 'font-weight:700' }, usdt(x.profit))))) : el('div', { class: 'mut' }, 'Sin ventas en este periodo.')));
   }
 
   if (tab === 'catalogo') {
@@ -192,12 +347,12 @@ async function adminView() {
         el('button', { class: 'sec', onclick: async () => { try { const r = await api('POST', '/api/admin/catalog-sync', {}); msg(note, `Catálogo actualizado: ${r.count} productos.`, 'ok'); setTimeout(adminView, 800); } catch (e) { msg(note, e.message, 'err'); } } }, 'Actualizar')),
       el('div', { class: 'mut' }, `${cat.length} productos en ${fams.size} juegos. "Por ID" se puede vender; "Código" (gift card/PIN) todavía no.`), note,
       el('div', { style: 'margin-top:10px' }, ...[...fams].map(([f, items]) => {
-        const byId = items.filter(i => i.requires_target), on = byId.filter(i => i.enabled).length;
+        const byIdItems = items.filter(i => i.requires_target), on = byIdItems.filter(i => i.enabled).length;
         return el('details', { class: 'fam', open: catQuery ? '' : null },
-          el('summary', {}, el('span', {}, f, el('div', { class: 'mut', style: 'font-weight:400' }, `${byId.length} por ID · ${items.length - byId.length} con código · vendes ${on}`)),
+          el('summary', {}, el('span', {}, f, el('div', { class: 'mut', style: 'font-weight:400' }, `${byIdItems.length} por ID · ${items.length - byIdItems.length} con código · vendes ${on}`)),
             on ? el('span', { class: 'tag id' }, 'Activo') : null),
           el('div', { class: 'body' },
-            byId.length ? el('div', { class: 'acts' }, on < byId.length ? act(`Vender todos por ID (${byId.length})`, () => api('POST', '/api/admin/family', { family: f, active: true }), '') : null,
+            byIdItems.length ? el('div', { class: 'acts' }, on < byIdItems.length ? act(`Vender todos por ID (${byIdItems.length})`, () => api('POST', '/api/admin/family', { family: f, active: true }), '') : null,
               on ? act('Dejar de vender todo', () => api('POST', '/api/admin/family', { family: f, active: false }), 'red') : null) : null,
             ...[...groupBy(items, c => c.variant)].sort((x, y) => y[1].length - x[1].length).map(([v, vi]) => {
               const vId = vi.filter(i => i.requires_target), vOn = vId.filter(i => i.enabled).length;
@@ -226,17 +381,17 @@ async function adminView() {
     const nu = { u: el('input', { placeholder: 'Usuario' }), p: el('input', { placeholder: 'Contraseña (8+)', type: 'password' }), m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', value: '10' }) };
     const create = el('button', {}, 'Crear');
     create.onclick = async () => {
-      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value }); adminView(); }
+      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.') }); adminView(); }
       catch (e) { msg(note, e.message, 'err'); }
     };
     out.append(card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, nu.m, create),
-      el('div', { class: 'mut' }, 'Precio para él = costo de Central One + su margen %.'), note),
+      el('div', { class: 'mut' }, 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.'), note),
     card('Revendedores', users.length ? el('div', { class: 'list' }, ...users.map(r => el('div', { style: 'display:block' },
       el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
         el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`)),
-        el('div', { style: 'font-size:1.2rem;font-weight:800' }, money(r.balance))),
+        el('div', { style: 'font-size:1.15rem;font-weight:800' }, usdt(r.balance))),
       el('div', { class: 'acts' },
-        act('+ Saldo', async () => { const a = prompt(`Monto a abonar a ${r.username} (negativo para restar):`); if (a) await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.') }); }, ''),
+        act('+ Saldo', async () => { const a = prompt(`Monto a abonar a ${r.username} en USDT (negativo para restar):`); if (a) await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.') }); }, ''),
         act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
         act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
         act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, 'Aún no tienes revendedores.')));
@@ -247,13 +402,13 @@ async function adminView() {
       orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', { style: 'display:block' },
         el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
           el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
-          el('div', { class: 'r' }, el('div', {}, money(o.price)), el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2)), tag(o.status))),
+          el('div', { class: 'r' }, el('div', {}, usdt(o.price)), el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2)), tag(o.status))),
         o.detail ? el('div', { class: 'mut', style: 'margin-top:4px' }, o.detail) : null,
         o.status === 'unknown' ? el('div', { class: 'acts' },
           act('Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
           act('Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), ''),
           act('No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null))) : el('div', { class: 'mut' }, 'Sin pedidos todavía.')));
   }
-  if (orders.some(o => ['pending', 'processing'].includes(o.status)) && tab !== 'catalogo') timer = setTimeout(() => adminView().catch(() => {}), 10000);
+  if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab)) timer = setTimeout(() => adminView().catch(() => {}), 10000);
 }
 boot();
