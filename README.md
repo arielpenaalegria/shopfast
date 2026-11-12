@@ -68,3 +68,7 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
 - **Alerta de saldo bajo**: Resumen → monto mínimo; se revisa cada 10 min (máx. un aviso cada 3 h).
 - **Recientes / Repetir**: el revendedor reutiliza IDs ya usados en el mismo juego y región.
 - Precios en **USDT** para revendedores = costo de Central One + margen % del revendedor.
+- **Registro**: los revendedores se crean la cuenta con correo y contraseña (Resumen → Registro: cerrado / con aprobación / abierto).
+  Las cuentas nuevas con aprobación aparecen en *Revendedores → Pendientes*.
+- **Tasas CUP**: Resumen → tasa transferencia y tasa saldo móvil (CUP por 1 USDT). Solo visual; se cobra en USDT.
+- **Aviso para revendedores**: mensaje que ven arriba en su panel.

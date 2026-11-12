@@ -55,6 +55,20 @@ function variantOf(c) {
 }
 const upOrder = (id, set, filter = {}) => C.orders.updateOne({ _id: id, ...filter }, { $set: { ...set, updated_at: now() } });
 
+// ---------- ajustes del panel (los cambia el admin desde Resumen) ----------
+const SETTINGS = {
+  rate_transfer: { def: 0, check: v => Number(v) >= 0 && Number(v) <= 100000, cast: Number },   // CUP por 1 USDT (transferencia)
+  rate_mobile: { def: 0, check: v => Number(v) >= 0 && Number(v) <= 100000, cast: Number },     // CUP por 1 USDT (saldo móvil)
+  registration: { def: 'approval', check: v => ['off', 'approval', 'open'].includes(v), cast: String },
+  default_markup: { def: 10, check: v => Number(v) >= 0 && Number(v) <= 100, cast: Number },
+  announcement: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },
+};
+async function getSettings() {
+  const out = {};
+  for (const [k, d] of Object.entries(SETTINGS)) { const r = await kvGet('set_' + k); out[k] = r ? d.cast(r.value) : d.def; }
+  return out;
+}
+
 // ---------- rutas API ----------
 const routes = {};
 const route = (m, p, role, fn) => (routes[m + ' ' + p] = { role, fn });
@@ -64,17 +78,43 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
   const key = A.clientIp(req) + '|' + username.toLowerCase();
   if (A.loginBlocked(key)) return send(res, 429, { error: 'Demasiados intentos. Espera 15 minutos.' });
   const u = await C.users.findOne({ username_lc: username.toLowerCase() });
-  if (!u || !u.active || !A.verifyPassword(String(body.password || ''), u.password_hash)) {
+  if (!u || !A.verifyPassword(String(body.password || ''), u.password_hash)) {
     A.loginFail(key);
     return send(res, 401, { error: 'Usuario o contraseña incorrectos' });
   }
+  if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
   A.loginOk(key);
   send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id), 12 * 3600) });
 });
 route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) }));
 
-route('GET', '/api/me', 'any', (req, res, u) =>
-  send(res, 200, { username: u.username, role: u.role, balance: u.balance_cents / 100, markup_pct: u.markup_pct, mode: MODE }));
+route('GET', '/api/me', 'any', async (req, res, u) => {
+  const st = await getSettings();
+  send(res, 200, { username: u.username, role: u.role, balance: u.balance_cents / 100, markup_pct: u.markup_pct, mode: MODE,
+    rates: { transfer: st.rate_transfer, mobile: st.rate_mobile }, announcement: st.announcement });
+});
+
+// Registro público de revendedores (correo + contraseña). Según el ajuste: cerrado, con aprobación del admin o abierto.
+route('GET', '/api/public-config', null, async (req, res) => send(res, 200, { registration: (await getSettings()).registration }));
+const regHits = new Map();
+route('POST', '/api/register', null, async (req, res, _u, b) => {
+  const st = await getSettings();
+  if (st.registration === 'off') return send(res, 403, { error: 'El registro está cerrado. Pide una cuenta al administrador.' });
+  const ip = A.clientIp(req), t = Date.now(), hits = (regHits.get(ip) || []).filter(x => t - x < 3600e3);
+  if (hits.length >= 5) return send(res, 429, { error: 'Demasiados registros desde tu conexión. Intenta más tarde.' });
+  const email = String(b.email || '').trim().toLowerCase(), pw = String(b.password || '');
+  if (!/^[^\s@<>]{1,64}@[^\s@<>]{1,190}\.[a-z]{2,}$/i.test(email) || email.length > 120) return send(res, 400, { error: 'Correo inválido' });
+  if (pw.length < 8) return send(res, 400, { error: 'La contraseña debe tener 8 o más caracteres' });
+  if (pw.length > 200) return send(res, 400, { error: 'Contraseña demasiado larga' });
+  hits.push(t); regHits.set(ip, hits);
+  const open = st.registration === 'open';
+  try {
+    await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(pw), role: 'reseller',
+      balance_cents: 0, markup_pct: st.default_markup, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
+  } catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ya existe una cuenta con ese correo' }); throw e; }
+  TG.notifyAdmins(`🆕 Nuevo revendedor registrado: ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
+  send(res, 201, { ok: true, active: open, message: open ? 'Cuenta creada. Ya puedes entrar.' : 'Cuenta creada. El administrador debe aprobarla antes de que puedas entrar.' });
+});
 
 // --- Subrevendedor ---
 // Productos habilitados por el admin y disponibles ahora (con precio, en stock y que pidan datos de destino)
@@ -331,7 +371,7 @@ route('GET', '/api/ledger', 'reseller', async (req, res, u) =>
 // --- Admin ---
 route('GET', '/api/admin/users', 'admin', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
-    .map(u => ({ id: u._id, username: u.username, balance: u.balance_cents / 100, markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, created_at: fmt(u.created_at) }))));
+    .map(u => ({ id: u._id, username: u.username, balance: u.balance_cents / 100, markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
 
 route('POST', '/api/admin/users', 'admin', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
@@ -364,10 +404,20 @@ route('POST', '/api/admin/balance', 'admin', async (req, res, admin, b) => {
   send(res, 200, { ok: true });
 });
 
+// Borrar una cuenta (solo si nunca compró ni tiene saldo: p. ej. registros falsos o rechazados)
+route('POST', '/api/admin/user-delete', 'admin', async (req, res, _u, b) => {
+  const id = Number(b.user_id), u = await C.users.findOne({ _id: id, role: 'reseller' });
+  if (!u) return send(res, 404, { error: 'Usuario no encontrado' });
+  if (u.balance_cents || await C.orders.countDocuments({ user_id: id }) || await C.ledger.countDocuments({ user_id: id }))
+    return send(res, 409, { error: 'Esta cuenta tiene saldo o movimientos: desactívala en vez de borrarla.' });
+  await C.users.deleteOne({ _id: id });
+  send(res, 200, { ok: true });
+});
+
 route('POST', '/api/admin/user-update', 'admin', async (req, res, _u, b) => {
   const uid = Number(b.user_id), f = { _id: uid, role: 'reseller' };
   const set = {};
-  if (b.active !== undefined) set.active = b.active ? 1 : 0;
+  if (b.active !== undefined) { set.active = b.active ? 1 : 0; if (b.active) set.pending_approval = 0; }
   if (b.markup_pct !== undefined) {
     const m = Number(b.markup_pct);
     if (!(m >= 0 && m <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
@@ -417,6 +467,7 @@ route('GET', '/api/admin/status', 'admin', async (req, res, _u) => {
     webhook_test_at: wt ? wt.updated_at : null,
     telegram: TG.enabled(), telegram_linked: !!(await C.users.findOne({ _id: _u.id })).telegram_chat_id,
     low_balance_threshold: Number(((await kvGet('low_balance_threshold')) || {}).value || 0),
+    settings: await getSettings(),
   });
 });
 
@@ -727,6 +778,12 @@ route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
     const n = Number(b.low_balance_threshold);
     if (!(n >= 0 && n <= 100000)) return send(res, 400, { error: 'Valor inválido' });
     await kvSet('low_balance_threshold', n);
+  }
+  for (const [k, d] of Object.entries(SETTINGS)) {
+    if (b[k] === undefined) continue;
+    const v = typeof b[k] === 'string' && d.cast === Number ? b[k].replace(',', '.') : b[k];
+    if (!d.check(v)) return send(res, 400, { error: 'Valor inválido: ' + k });
+    await kvSet('set_' + k, d.cast(v));
   }
   send(res, 200, { ok: true });
 });
