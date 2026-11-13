@@ -42,9 +42,30 @@ function readBody(req, max = 20000) {
 }
 const toCents = v => { const n = Math.round(Number(v) * 100); return Number.isFinite(n) ? n : NaN; };
 const httpErr = (http, msg) => Object.assign(new Error(msg), { http });
-const ledger = async (s, uid, cents, type, ref, note) =>
-  C.ledger.insertOne({ _id: await nextId('ledger', s), user_id: uid, amount_cents: cents, type, ref: ref ?? null, note: note ?? null, created_at: now() }, { session: s });
-const addBalance = (s, uid, delta) => C.users.updateOne({ _id: uid }, { $inc: { balance_cents: delta } }, { session: s });
+// ---------- 3 saldos separados por revendedor ----------
+// usdt: centavos de USDT · transfer: centavos de CUP (transferencia) · mobile: centavos de CUP (saldo móvil).
+// Cada depósito se abona en SU moneda y cada compra se paga en la moneda que elija el revendedor.
+// Las tasas CUP/USDT solo sirven para calcular el precio en CUP de cada paquete; nunca se convierte saldo.
+const CUR = { usdt: 'balance_cents', transfer: 'bal_transfer_cents', mobile: 'bal_mobile_cents' };
+const CUR_L = { usdt: 'USDT', transfer: 'CUP transferencia', mobile: 'CUP saldo móvil' };
+const curOf = c => (CUR[c] ? c : 'usdt');
+const fmtCur = (cents, c) => curOf(c) === 'usdt' ? (cents / 100).toFixed(2) + ' USDT' : Math.round(cents / 100) + ' ' + CUR_L[c];
+const balancesOf = u => ({ usdt: (u.balance_cents || 0) / 100, transfer: (u.bal_transfer_cents || 0) / 100, mobile: (u.bal_mobile_cents || 0) / 100 });
+/** Precio de un paquete en una moneda. CUP = precio USDT × tasa, redondeado hacia arriba al CUP entero. null = esa moneda no está disponible (sin tasa). */
+function priceIn(usdtCents, cur, st) {
+  if (curOf(cur) === 'usdt') return usdtCents;
+  const rate = Number(cur === 'transfer' ? st.rate_transfer : st.rate_mobile) || 0;
+  if (!(rate > 0)) return null;
+  return Math.ceil(Math.round(usdtCents * rate * 1000) / 100000) * 100;
+}
+const ledger = async (s, uid, cents, type, ref, note, cur = 'usdt') =>
+  C.ledger.insertOne({ _id: await nextId('ledger', s), user_id: uid, amount_cents: cents, currency: curOf(cur), type, ref: ref ?? null, note: note ?? null, created_at: now() }, { session: s });
+const addBalance = (s, uid, delta, cur = 'usdt') => C.users.updateOne({ _id: uid }, { $inc: { [CUR[curOf(cur)]]: delta } }, { session: s });
+/** Descuenta saldo solo si alcanza. Devuelve true/false. */
+const takeBalance = async (s, uid, cents, cur = 'usdt') => {
+  const f = CUR[curOf(cur)];
+  return (await C.users.updateOne({ _id: uid, [f]: { $gte: cents } }, { $inc: { [f]: -cents } }, { session: s })).matchedCount > 0;
+};
 /** Región/servidor de un producto (ID, BR, LATAM, EU, GLOBAL...), igual que en el portal de Central One.
  *  Usa el campo region del catálogo; si no viene, lo que va entre paréntesis en el nombre ("Free Fire (BR) · ..."). */
 function variantOf(c) {
@@ -92,7 +113,7 @@ route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 
 
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
-  send(res, 200, { username: u.username, role: u.role, balance: u.balance_cents / 100, markup_pct: u.markup_pct, mode: MODE,
+  send(res, 200, { username: u.username, role: u.role, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
     announcement: st.announcement });
@@ -114,7 +135,7 @@ route('POST', '/api/register', null, async (req, res, _u, b) => {
   const open = st.registration === 'open';
   try {
     await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(pw), role: 'reseller',
-      balance_cents: 0, markup_pct: st.default_markup, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
+      balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
   } catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ya existe una cuenta con ese correo' }); throw e; }
   TG.notifyAdmins(`🆕 Nuevo revendedor registrado: ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
   send(res, 201, { ok: true, active: open, message: open ? 'Cuenta creada. Ya puedes entrar.' : 'Cuenta creada. El administrador debe aprobarla antes de que puedas entrar.' });
@@ -131,10 +152,14 @@ async function availableProducts(onlyId) {
     .map(({ p, c }) => ({ id: p._id, name: p.name, fixed_price_cents: p.fixed_price_cents || null, family: c.family_name || 'Otros', variant: variantOf(c), product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
 }
 
-route('GET', '/api/products', 'reseller', async (req, res, u) =>
-  send(res, 200, (await availableProducts()).sort((a, b) => a.name.localeCompare(b.name)).map(p => ({
-    id: p.id, name: p.name, family: p.family, variant: p.variant, price: priceFor(p, u) / 100, fields: p.target_schema,
-  }))));
+route('GET', '/api/products', 'reseller', async (req, res, u) => {
+  const st = await getSettings();
+  send(res, 200, (await availableProducts()).sort((a, b) => a.name.localeCompare(b.name)).map(p => {
+    const usd = priceFor(p, u), t = priceIn(usd, 'transfer', st), m = priceIn(usd, 'mobile', st);
+    return { id: p.id, name: p.name, family: p.family, variant: p.variant, price: usd / 100,
+      prices: { usdt: usd / 100, transfer: t == null ? null : t / 100, mobile: m == null ? null : m / 100 }, fields: p.target_schema };
+  }));
+});
 
 /** Valida los datos del destino contra el target_schema del producto (nunca fijos en el código).
  *  Devuelve { payload } o { error }. */
@@ -186,22 +211,24 @@ route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
   const b = buildPayload(p, body);
   if (b.error) return send(res, 400, { error: b.error });
   const payload = b.payload;
-  const price = priceFor(p, u);
+  const cur = curOf(body.currency);
+  const priceUsd = priceFor(p, u);
+  const price = priceIn(priceUsd, cur, await getSettings());
+  if (price == null) return send(res, 400, { error: `El pago en ${CUR_L[cur]} no está disponible ahora.` });
   const display = Object.values(payload).join(' · ');
 
   // 1) Cobrar y crear el pedido en una sola transacción (no hay doble gasto)
   let orderId;
   try {
     orderId = await withTx(async s => {
-      const ch = await C.users.updateOne({ _id: u.id, balance_cents: { $gte: price } }, { $inc: { balance_cents: -price } }, { session: s });
-      if (!ch.matchedCount) throw httpErr(402, 'Saldo insuficiente');
+      if (!await takeBalance(s, u.id, price, cur)) throw httpErr(402, `Saldo insuficiente en ${CUR_L[cur]}. Te faltan ${fmtCur(price - (u[CUR[cur]] || 0), cur)}.`);
       const id = await nextId('orders', s), t = now();
       await C.orders.insertOne({
         _id: id, user_id: u.id, product_id: p.id, product_name: p.name, target: display, catalog_item_id: p.product_id,
-        target_payload: payload, cost_e4: p.price_e4, price_cents: price, status: 'pending', idempotency_key: 'pedido-' + crypto.randomUUID(),
+        target_payload: payload, cost_e4: p.price_e4, price_cents: price, currency: cur, price_usdt_cents: priceUsd, status: 'pending', idempotency_key: 'pedido-' + crypto.randomUUID(),
         provider_order_id: null, reference_code: null, detail: null, failure_code: null, refunded: 0, checked_at: null, created_at: t, updated_at: t,
       }, { session: s });
-      await ledger(s, u.id, -price, 'order', String(id), `${p.name} → ${display}`);
+      await ledger(s, u.id, -price, 'order', String(id), `${p.name} → ${display}`, cur);
       return id;
     });
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
@@ -225,8 +252,8 @@ async function settle(orderId, outcome, detail, failureCode) {
     if (refund) set.refunded = 1;
     await C.orders.updateOne({ _id: orderId }, { $set: set }, { session: s });
     if (refund) {
-      await addBalance(s, o.user_id, o.price_cents);
-      await ledger(s, o.user_id, o.price_cents, 'refund', String(orderId), 'Reembolso');
+      await addBalance(s, o.user_id, o.price_cents, o.currency);
+      await ledger(s, o.user_id, o.price_cents, 'refund', String(orderId), 'Reembolso', o.currency);
     }
     return true;
   });
@@ -238,7 +265,7 @@ async function settle(orderId, outcome, detail, failureCode) {
 async function notifyOrder(orderId) {
   const o = await C.orders.findOne({ _id: orderId }); if (!o) return;
   const line = `${o.product_name} → ${o.target}`;
-  if (o.status === 'completed') await TG.notifyUser(o.user_id, `✅ Recarga #${o._id} completada\n${line}\n${(o.price_cents / 100).toFixed(2)} USDT`);
+  if (o.status === 'completed') await TG.notifyUser(o.user_id, `✅ Recarga #${o._id} completada\n${line}\n${fmtCur(o.price_cents, o.currency)}`);
   else if (o.status === 'failed') await TG.notifyUser(o.user_id, `❌ Recarga #${o._id} fallida\n${line}\nSe devolvió el saldo.`);
   else if (o.status === 'unknown') await TG.notifyAdmins(`⚠️ Pedido #${o._id} para revisar\n${line}\n${o.detail || ''}`);
 }
@@ -248,9 +275,8 @@ function chargeAgain(orderId, note) {
   return withTx(async s => {
     const o = await C.orders.findOne({ _id: orderId, refunded: 1, status: { $in: ['failed', 'unknown'] } }, { session: s });
     if (!o) return null;
-    const ch = await C.users.updateOne({ _id: o.user_id, balance_cents: { $gte: o.price_cents } }, { $inc: { balance_cents: -o.price_cents } }, { session: s });
-    if (!ch.matchedCount) return false;
-    await ledger(s, o.user_id, -o.price_cents, 'order', String(orderId), note);
+    if (!await takeBalance(s, o.user_id, o.price_cents, o.currency)) return false;
+    await ledger(s, o.user_id, -o.price_cents, 'order', String(orderId), note, o.currency);
     await C.orders.updateOne({ _id: orderId }, { $set: { status: 'completed', refunded: 0, detail: note, updated_at: now() } }, { session: s });
     return true;
   }).then(r => { if (r) notifyOrder(orderId).catch(() => {}); return r; });
@@ -364,18 +390,18 @@ const REASONS = {
 };
 route('GET', '/api/orders', 'reseller', async (req, res, u) =>
   send(res, 200, (await C.orders.find({ user_id: u.id }).sort({ _id: -1 }).limit(100).toArray()).map(o => ({
-    id: o._id, product_id: o.product_id, target_payload: o.target_payload, product_name: o.product_name, target: o.target, price: o.price_cents / 100, status: o.status, created_at: fmt(o.created_at),
+    id: o._id, product_id: o.product_id, target_payload: o.target_payload, product_name: o.product_name, target: o.target, price: o.price_cents / 100, currency: curOf(o.currency), status: o.status, created_at: fmt(o.created_at),
     reason: o.status === 'failed' ? (REASONS[o.failure_code] || 'No se pudo entregar la recarga. Se devolvió tu saldo.') : null,
   }))));
 
 route('GET', '/api/ledger', 'reseller', async (req, res, u) =>
   send(res, 200, (await C.ledger.find({ user_id: u.id }).sort({ _id: -1 }).limit(100).toArray())
-    .map(l => ({ amount: l.amount_cents / 100, type: l.type, note: l.note, created_at: fmt(l.created_at) }))));
+    .map(l => ({ amount: l.amount_cents / 100, currency: curOf(l.currency), type: l.type, note: l.note, created_at: fmt(l.created_at) }))));
 
 // --- Admin ---
 route('GET', '/api/admin/users', 'admin', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
-    .map(u => ({ id: u._id, username: u.username, balance: u.balance_cents / 100, markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
+    .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
 
 route('POST', '/api/admin/users', 'admin', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
@@ -390,19 +416,20 @@ route('POST', '/api/admin/users', 'admin', async (req, res, _u, b) => {
 
 async function createUser(username, hash, role, markup = 0) {
   return C.users.insertOne({ _id: await nextId('users'), username, username_lc: username.toLowerCase(), password_hash: hash, role,
-    balance_cents: 0, markup_pct: markup, active: 1, created_at: now() });
+    balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: markup, active: 1, created_at: now() });
 }
 
 route('POST', '/api/admin/balance', 'admin', async (req, res, admin, b) => {
-  const uid = Number(b.user_id), cents = toCents(b.amount);
-  if (!Number.isInteger(uid) || !Number.isFinite(cents) || cents === 0 || Math.abs(cents) > 10000000) return send(res, 400, { error: 'Datos inválidos' });
+  const uid = Number(b.user_id), cents = toCents(b.amount), cur = curOf(b.currency);
+  if (!Number.isInteger(uid) || !Number.isFinite(cents) || cents === 0 || Math.abs(cents) > (cur === 'usdt' ? 10000000 : 1000000000)) return send(res, 400, { error: 'Datos inválidos' });
   try {
     await withTx(async s => {
       const t = await C.users.findOne({ _id: uid, role: 'reseller' }, { session: s });
       if (!t) throw httpErr(404, 'Usuario no encontrado');
-      const ch = await C.users.updateOne({ _id: uid, balance_cents: { $gte: -cents } }, { $inc: { balance_cents: cents } }, { session: s });
-      if (!ch.matchedCount) throw httpErr(400, 'El saldo quedaría negativo');
-      await ledger(s, uid, cents, cents > 0 ? 'topup' : 'adjust', null, String(b.note || '').slice(0, 200) || `Por ${admin.username}`);
+      const f = CUR[cur];
+      const ch = await C.users.updateOne(cents > 0 ? { _id: uid } : { _id: uid, [f]: { $gte: -cents } }, { $inc: { [f]: cents } }, { session: s }); // abonar siempre funciona aunque el campo aún no exista
+      if (!ch.matchedCount) throw httpErr(400, `El saldo en ${CUR_L[cur]} quedaría negativo`);
+      await ledger(s, uid, cents, cents > 0 ? 'topup' : 'adjust', null, String(b.note || '').slice(0, 200) || `Por ${admin.username}`, cur);
     });
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
   send(res, 200, { ok: true });
@@ -412,7 +439,7 @@ route('POST', '/api/admin/balance', 'admin', async (req, res, admin, b) => {
 route('POST', '/api/admin/user-delete', 'admin', async (req, res, _u, b) => {
   const id = Number(b.user_id), u = await C.users.findOne({ _id: id, role: 'reseller' });
   if (!u) return send(res, 404, { error: 'Usuario no encontrado' });
-  if (u.balance_cents || await C.orders.countDocuments({ user_id: id }) || await C.ledger.countDocuments({ user_id: id }))
+  if (u.balance_cents || u.bal_transfer_cents || u.bal_mobile_cents || await C.orders.countDocuments({ user_id: id }) || await C.ledger.countDocuments({ user_id: id }))
     return send(res, 409, { error: 'Esta cuenta tiene saldo o movimientos: desactívala en vez de borrarla.' });
   await C.users.deleteOne({ _id: id });
   send(res, 200, { ok: true });
@@ -444,8 +471,8 @@ route('GET', '/api/admin/orders', 'admin', async (req, res) => {
   const os = await C.orders.find({}).sort({ _id: -1 }).limit(200).toArray();
   const us = new Map((await C.users.find({ _id: { $in: [...new Set(os.map(o => o.user_id))] } }).toArray()).map(u => [u._id, u.username]));
   send(res, 200, os.map(o => {
-    const price = o.price_cents / 100;
-    return { id: o._id, username: us.get(o.user_id), product_name: o.product_name, target: o.target, price, status: o.status,
+    const price = (o.price_usdt_cents ?? o.price_cents) / 100; // equivalente USDT (para la ganancia)
+    return { id: o._id, username: us.get(o.user_id), product_name: o.product_name, target: o.target, price, paid: o.price_cents / 100, currency: curOf(o.currency), status: o.status,
       reference_code: o.reference_code, detail: o.detail, created_at: fmt(o.created_at), cost: e4ToStr(o.cost_e4), margin: (price - o.cost_e4 / 10000).toFixed(4) };
   }));
 });
@@ -628,19 +655,15 @@ route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
     // Transferencia / saldo móvil: monto en CUP obligatorio
     const cupCents = b.amount_cup === undefined || b.amount_cup === '' ? null : Math.round(Number(String(b.amount_cup).replace(',', '.')) * 100);
     if (!(cupCents > 0 && cupCents <= 100000000)) return send(res, 400, { error: 'Indica el monto que enviaste en CUP.' });
-    // Convertir CUP a USDT usando la tasa del admin para saber cuánto abonar
-    const st = await getSettings();
-    const rate = method === 'transfer' ? st.rate_transfer : st.rate_mobile;
-    const usdtCents = rate > 0 ? Math.round(cupCents / rate) : null; // centavos de USDT
-    // Se guarda el monto CUP y el equivalente calculado; el admin puede ajustar
-    b._cup_cents = cupCents; b._usdt_equiv = usdtCents;
+    if (cupCents % 100) return send(res, 400, { error: 'El monto en CUP debe ser un número entero.' });
+    b._cup_cents = cupCents; // se abona en CUP a su saldo de transferencia o de saldo móvil (sin convertir)
   }
   const img = b.image ? String(b.image) : null;
   if (img && (img.length > 2400000 || !IMG_RE.test(img))) return send(res, 400, { error: 'La imagen no es válida o es muy grande' });
   if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending' }) >= 3) return send(res, 429, { error: 'Ya tienes 3 solicitudes pendientes. Espera a que se revisen.' });
   const id = await nextId('topup_requests');
   const doc = { _id: id, user_id: u.id, method,
-    amount_cents: method === 'usdt' ? cents : (b._usdt_equiv || null),
+    amount_cents: method === 'usdt' ? cents : b._cup_cents,
     amount_cup: method !== 'usdt' ? b._cup_cents : null,
     note: String(b.note || '').slice(0, 300), image: img, status: 'pending', admin_note: null,
     approved_cents: null, created_at: now(), decided_at: null, chain: null,
@@ -656,8 +679,8 @@ route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
     return send(res, 201, { ok: true, id, auto: 'manual', message: 'Solicitud enviada. El administrador la revisará.' });
   }
   const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
-  const cupInfo = b._cup_cents ? ` · ${(b._cup_cents / 100).toFixed(0)} CUP` : '';
-  TG.notifyAdmins(`💰 Solicitud de saldo #${id} (${METHOD_L[method]})\n${u.username}: ${cents !== null ? (cents / 100).toFixed(2) + ' USDT' : (b._usdt_equiv ? '~' + (b._usdt_equiv / 100).toFixed(2) + ' USDT' : '')}${cupInfo}${hash ? '\nHash: ' + hash : ''}`).catch(() => {});
+  const amt = method === 'usdt' ? (cents !== null ? fmtCur(cents, 'usdt') : '') : fmtCur(b._cup_cents, method);
+  TG.notifyAdmins(`💰 Solicitud de saldo #${id} (${METHOD_L[method]})\n${u.username}: ${amt}${hash ? '\nHash: ' + hash : ''}\nRevísala en el panel → Saldo.`).catch(() => {});
   send(res, 201, { ok: true, id, auto: 'manual', message: 'Solicitud enviada. El administrador la revisará.' });
 });
 
@@ -712,8 +735,9 @@ async function recheckDeposits() {
   for (const t of await C.topup_requests.find({ status: 'pending', verify: 'wait' }).sort({ _id: 1 }).limit(10).toArray()) await verifyDeposit(t._id);
 }
 
-const trOut = (r, admin) => ({ id: r._id, method: r.method || 'usdt',
-  amount: r.amount_cents == null ? null : r.amount_cents / 100, approved: r.approved_cents == null ? null : r.approved_cents / 100,
+const trOut = (r, admin) => ({ id: r._id, method: r.method || 'usdt', currency: curOf(r.method), // montos en la moneda del método (USDT o CUP)
+  amount: r.method && r.method !== 'usdt' ? (r.amount_cup == null ? null : r.amount_cup / 100) : (r.amount_cents == null ? null : r.amount_cents / 100),
+  approved: r.approved_cents == null ? null : r.approved_cents / 100,
   amount_cup: r.amount_cup == null ? null : r.amount_cup / 100,
   note: r.note, status: r.status, admin_note: r.admin_note, has_image: !!r.image, created_at: fmt(r.created_at), decided_at: fmt(r.decided_at),
   tx_hash: r.tx_hash || null, verify: r.verify || 'manual', verify_msg: r.verify_msg || null,
@@ -744,15 +768,17 @@ route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => 
     const r = await withTx(async s => {
       const t = await C.topup_requests.findOne({ _id: id, status: 'pending' }, { session: s });
       if (!t) throw httpErr(404, 'Solicitud no encontrada o ya revisada');
-      const def = t.chain ? t.chain.cents : t.amount_cents;
+      const cur = curOf(t.method);
+      const def = t.chain ? t.chain.cents : (cur === 'usdt' ? t.amount_cents : t.amount_cup);
       const cents = approve ? (b.amount !== undefined && b.amount !== '' ? toCents(b.amount) : def) : null;
-      if (approve && !(cents > 0 && cents <= 10000000)) throw httpErr(400, 'Monto inválido');
+      if (approve && !(cents > 0 && cents <= (cur === 'usdt' ? 10000000 : 1000000000))) throw httpErr(400, 'Monto inválido');
+      if (approve && cur !== 'usdt' && cents % 100) throw httpErr(400, 'El monto en CUP debe ser entero');
       await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
       if (approve) {
-        await addBalance(s, t.user_id, cents);
-        await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`);
+        await addBalance(s, t.user_id, cents, cur);
+        await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`, cur);
       }
-      return { user_id: t.user_id, cents, from: t.chain ? t.chain.from : null };
+      return { user_id: t.user_id, cents, cur, from: t.chain ? t.chain.from : null };
     });
     // "Confiar en esta billetera": sus próximos pagos de ESTE revendedor se aprueban solos
     if (approve && trust && r.from) {
@@ -760,7 +786,7 @@ route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => 
       if (!w) { try { await C.wallets.insertOne({ _id: r.from, user_id: r.user_id, created_at: now(), by: admin.username }); trusted = true; } catch (e) { if (!isDup(e)) throw e; } }
       else trusted = w.user_id === r.user_id;
     }
-    TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${(r.cents / 100).toFixed(2)} USDT (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
+    TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${fmtCur(r.cents, r.cur)} (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
   send(res, 200, { ok: true, trusted });
 });
@@ -783,16 +809,16 @@ route('GET', '/api/admin/report', 'admin', async (req, res) => {
   const by = new Map(), prod = new Map();
   let sold = 0, cost = 0;
   for (const o of rows) {
-    const c = Math.round(o.cost_e4 / 100); sold += o.price_cents; cost += c;
+    const c = Math.round(o.cost_e4 / 100), pu = o.price_usdt_cents ?? o.price_cents; sold += pu; cost += c;
     const x = by.get(o.user_id) || { username: users.get(o.user_id) || '#' + o.user_id, count: 0, sold: 0, profit: 0 };
-    x.count++; x.sold += o.price_cents; x.profit += o.price_cents - c; by.set(o.user_id, x);
-    const y = prod.get(o.product_name) || { name: o.product_name, count: 0, profit: 0 }; y.count++; y.profit += o.price_cents - c; prod.set(o.product_name, y);
+    x.count++; x.sold += pu; x.profit += pu - c; by.set(o.user_id, x);
+    const y = prod.get(o.product_name) || { name: o.product_name, count: 0, profit: 0 }; y.count++; y.profit += pu - c; prod.set(o.product_name, y);
   }
   // últimos 14 días, para la gráfica de barras
   const since = new Date(Date.now() - 13 * 864e5); since.setUTCHours(0, 0, 0, 0);
   const days = new Map(); for (let i = 0; i < 14; i++) days.set(new Date(since.getTime() + i * 864e5).toISOString().slice(0, 10), 0);
   for (const o of await C.orders.find({ status: 'completed', created_at: { $gte: since } }).toArray()) {
-    const k = o.created_at.toISOString().slice(0, 10); if (days.has(k)) days.set(k, days.get(k) + o.price_cents - Math.round(o.cost_e4 / 100));
+    const k = o.created_at.toISOString().slice(0, 10); if (days.has(k)) days.set(k, days.get(k) + (o.price_usdt_cents ?? o.price_cents) - Math.round(o.cost_e4 / 100));
   }
   const c2 = v => v / 100;
   send(res, 200, { from: fmt(d), count: rows.length, sold: c2(sold), cost: c2(cost), profit: c2(sold - cost),
@@ -967,7 +993,8 @@ const server = http.createServer(async (req, res) => {
     let f = url.pathname === '/' ? '/index.html' : url.pathname;
     const full = path.join(PUBLIC, path.normalize(f));
     if (!full.startsWith(PUBLIC + path.sep) || !fs.existsSync(full) || !fs.statSync(full).isFile()) { res.writeHead(404); return res.end('No encontrado'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', ...SEC });
+    // no-cache: el navegador siempre comprueba si hay versión nueva (si no, tras un deploy seguía usando el app.js viejo)
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'Cache-Control': /\.(html|js|css)$/.test(full) ? 'no-cache' : 'public, max-age=86400', ...SEC });
     fs.createReadStream(full).pipe(res);
   } catch (e) {
     console.error(e);
