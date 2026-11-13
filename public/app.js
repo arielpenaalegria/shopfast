@@ -1,5 +1,5 @@
 'use strict';
-document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}' }));
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -30,12 +30,14 @@ const tag = (s, map = STATUS) => el('span', { class: 'tag ' + s }, map[s] || s);
 const card = (title, ...kids) => el('div', { class: 'card' }, title ? el('h2', {}, title) : null, ...kids);
 const groupBy = (arr, f) => arr.reduce((m, x) => { const k = f(x); (m.get(k) || m.set(k, []).get(k)).push(x); return m; }, new Map());
 let timer = null, flash = null;
-let rates = { transfer: 0, mobile: 0 };
-const CUPL = { transfer: 'CUP transf.', mobile: 'CUP saldo' };
-const cupT = n => rates.transfer > 0 ? '≈ ' + Math.ceil(Number(n) * rates.transfer).toLocaleString('es') + ' CUP transf.' : null;
-const cupM = n => rates.mobile > 0 ? '≈ ' + Math.ceil(Number(n) * rates.mobile).toLocaleString('es') + ' CUP saldo' : null;
-/** Muestra los precios en las 3 monedas a la vez (USDT siempre, CUP transf. y CUP saldo cuando haya tasa). */
-const priceLines = n => [cupT(n), cupM(n)].filter(Boolean);
+/* 3 saldos separados: USDT, CUP transferencia y CUP saldo móvil. Cada uno se recarga y se gasta en su moneda. */
+const CURS = ['usdt', 'transfer', 'mobile'];
+const CUR_S = { usdt: 'USDT', transfer: 'CUP transf.', mobile: 'CUP saldo' };
+const CUR_LONG = { usdt: 'USDT', transfer: 'CUP Transferencia', mobile: 'CUP Saldo móvil' };
+const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
+/** Monto con su moneda: USDT con 2 decimales, CUP en enteros. */
+const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
+let payCur = 'usdt'; try { payCur = localStorage.getItem('payCur') || 'usdt'; } catch {}
 const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
 
 const REG = { ID: 'Indonesia', BR: 'Brasil', EU: 'Europa', LATAM: 'Latinoamérica', US: 'Estados Unidos', NA: 'Norteamérica', SG: 'Singapur', MY: 'Malasia',
@@ -191,7 +193,7 @@ async function resellerView() {
   clearTimeout(timer);
   const [me, products, orders, led, reqs, extra, dep] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'),
     api('GET', '/api/ledger'), api('GET', '/api/topup-requests'), api('GET', '/api/me-extra'), api('GET', '/api/deposit-info')]);
-  rates = me.rates || rates;
+  const bal = me.balances || { usdt: me.balance, transfer: 0, mobile: 0 };
   const out = $('app'); out.replaceChildren();
   const byId = new Map(products.map(p => [p.id, p]));
   const fams = groupBy(products, p => p.family);
@@ -223,7 +225,7 @@ async function resellerView() {
     put(buy, el('h3', {}, n + '. Elige el paquete'),
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
         shortName(p.name), el('b', {}, usdt(p.price)),
-        ...priceLines(p.price).map(t => el('span', { class: 'mut', style: 'display:block;font-size:.75rem' }, t))))));
+        ...['transfer', 'mobile'].filter(c => p.prices && p.prices[c] != null).map(c => el('span', { class: 'mut', style: 'display:block;font-size:.78rem' }, money(p.prices[c], c)))))));
     const p = list.find(x => x.id === pick.product);
     if (!p) return;
     const inputs = {};
@@ -255,17 +257,32 @@ async function resellerView() {
       } catch (e) { msg(vbox, e.message, 'err'); }
       setTimeout(() => { vbtn.disabled = false; }, 2000);
     };
-    const btn = el('button', {}, `Enviar · ${usdt(p.price)}`);
+    // ¿Con qué saldo paga? Solo monedas con precio disponible; por defecto la última usada (o la primera que alcance)
+    const avail = CURS.filter(c => p.prices ? p.prices[c] != null : c === 'usdt');
+    if (!avail.includes(payCur)) payCur = avail.find(c => bal[c] >= p.prices[c]) || avail[0];
+    const priceOf = c => p.prices ? p.prices[c] : p.price;
+    const btn = el('button', {});
+    const payBox = el('div');
+    const renderPay = () => {
+      btn.textContent = `Enviar · ${money(priceOf(payCur), payCur)}`;
+      payBox.replaceChildren(); put(payBox, el('div', { class: 'chips', style: 'margin-bottom:6px' }, ...avail.map(c => {
+        const enough = bal[c] >= priceOf(c);
+        return el('button', { type: 'button', class: 'chip paych' + (c === payCur ? ' on' : '') + (enough ? '' : ' low'),
+          onclick: () => { payCur = c; try { localStorage.setItem('payCur', c); } catch {} renderPay(); } },
+          el('span', {}, CUR_ICON[c] + ' ' + money(priceOf(c), c)), el('small', {}, 'Tienes ' + money(bal[c], c)));
+      })), bal[payCur] < priceOf(payCur) ? el('div', { class: 'msg err', style: 'margin:0 0 8px' }, `No te alcanza el saldo ${CUR_LONG[payCur]}. Elige otro o pide saldo.`) : null);
+    };
+    renderPay();
     btn.onclick = async () => {
       const t = target();
       const empty = p.fields.find(f => !String(t[f.key] || '').trim());
       if (empty) { msg(vbox, `Falta: ${empty.label}`, 'err'); inputs[empty.key].focus(); return; }
       for (const k of Object.keys(t)) t[k] = String(t[k]).trim();
-      const extra = priceLines(p.price).join('\n');
-      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\npor ${usdt(p.price)}${extra ? '\n' + extra : ''}?`)) return;
+      if (bal[payCur] < priceOf(payCur)) { msg(vbox, `Saldo ${CUR_LONG[payCur]} insuficiente. Elige otro saldo o pide saldo.`, 'err'); return; }
+      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\n\nSe pagará con saldo ${CUR_LONG[payCur]}: ${money(priceOf(payCur), payCur)}?`)) return;
       btn.disabled = true;
       try {
-        const d = await api('POST', '/api/orders', { product_id: p.id, target: t });
+        const d = await api('POST', '/api/orders', { product_id: p.id, target: t, currency: payCur });
         flash = d.status === 'unknown' ? [d.message, 'warn'] : ['Recarga enviada. Se está procesando; el estado se actualiza solo.', 'ok'];
         pick.product = null;
       } catch (e) { flash = [e.message, 'err']; }
@@ -275,7 +292,7 @@ async function resellerView() {
     put(buy, step3,
       recent.length ? el('div', { class: 'recents' }, el('span', { class: 'mut', style: 'align-self:center' }, 'Recientes:'),
         ...recent.map(t => el('button', { class: 'chip', onclick: () => fillWith(t) }, Object.values(t).join(' · ')))) : null,
-      el('div', { class: 'row' }, ...fields), el('div', { class: 'row' }, vbtn, btn), vbox);
+      el('div', { class: 'row' }, ...fields), el('h3', {}, 'Pagar con'), payBox, el('div', { class: 'row' }, vbtn, btn), vbox);
     if (scrollTo3) { scrollTo3 = false; setTimeout(() => { step3.scrollIntoView({ behavior: 'smooth', block: 'start' }); if (!recent.length && fields[0]) fields[0].focus(); }, 50); }
   };
 
@@ -325,7 +342,7 @@ async function resellerView() {
         card('1. Envía USDT a esta billetera',
           el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si envías por otra red el dinero se pierde.'),
           el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn),
-          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Mínimo 1 USDT. Se te abona lo que llegue.')),
+          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Mínimo 1 USDT. Se abona a tu saldo USDT lo que llegue.')),
         card('2. Pega el hash del envío', el('div', { class: 'mut', style: 'margin-bottom:8px' },
           dep.auto ? 'Se comprueba en la blockchain y se te abona solo, normalmente en menos de un minuto.' : 'El admin revisará el pago y te abonará el saldo.'),
           el('div', { class: 'row' }, hash), manual, el('div', { class: 'row', style: 'margin-top:8px' }, note), proof.node,
@@ -334,26 +351,25 @@ async function resellerView() {
 
     // Transferencia bancaria o Saldo móvil (siempre revisión manual del admin)
     const info = method === 'transfer' ? dep.payment_transfer : dep.payment_mobile;
-    const rate = Number(method === 'transfer' ? dep.rates.transfer : dep.rates.mobile) || 0;
     const label = method === 'transfer' ? 'transferencia' : 'saldo móvil';
     const cupAmt = el('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', placeholder: 'Monto enviado en CUP' });
     const equiv = el('div', { class: 'mut', style: 'margin:-2px 0 8px;font-weight:700;color:var(--ok)' });
     cupAmt.oninput = () => {
-      const v = Number(cupAmt.value);
-      equiv.textContent = v > 0 && rate > 0 ? `Recibirás ≈ ${(Math.floor(v / rate * 100) / 100).toFixed(2)} USDT` : '';
+      const v = Math.floor(Number(cupAmt.value));
+      equiv.textContent = v > 0 ? `Se abonarán ${v.toLocaleString('es')} CUP a tu saldo ${CUR_LONG[method]}` : '';
     };
     const sendBtn = el('button', { class: 'big' }, 'Enviar solicitud');
     sendBtn.onclick = () => {
       const v = Number(String(cupAmt.value).replace(',', '.'));
       if (!(v > 0)) return msg(reqBox, 'Escribe cuántos CUP enviaste.', 'err');
+      if (!Number.isInteger(v)) return msg(reqBox, 'El monto en CUP debe ser un número entero (sin decimales).', 'err');
       if (!proof.get()) return msg(reqBox, 'Adjunta la foto o captura del comprobante para que el admin pueda confirmar el pago.', 'err');
       submit(sendBtn, { method, amount_cup: String(v) }, 'Enviando… (subiendo la foto)');
     };
     return el('div', {},
-      card(`1. Envía por ${label} a:`, payInfo(info),
-        rate > 0 ? el('div', { class: 'mut', style: 'margin-top:10px' }, `Tasa: ${rate.toLocaleString('es')} CUP = 1 USDT`) : null),
+      card(`1. Envía por ${label} a:`, payInfo(info)),
       card('2. Avisa que ya pagaste',
-        el('ol', { class: 'steps' }, el('li', {}, 'Escribe cuántos CUP enviaste.'), el('li', {}, 'Adjunta la captura o foto del comprobante.'), el('li', {}, 'El admin lo confirma y se te abona el saldo en USDT.')),
+        el('ol', { class: 'steps' }, el('li', {}, 'Escribe cuántos CUP enviaste.'), el('li', {}, 'Adjunta la captura o foto del comprobante.'), el('li', {}, `El admin lo confirma y se te abona en tu saldo ${CUR_LONG[method]}.`)),
         el('div', { class: 'row' }, cupAmt), equiv, el('div', { class: 'row' }, note), proof.node,
         el('div', { class: 'acts' }, sendBtn), reqBox));
   }
@@ -361,9 +377,9 @@ async function resellerView() {
   const tabs = [['recargar', 'Recargar'], ['historial', 'Mis recargas'], ['saldo', 'Pedir saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', 'Cuenta']];
   put(out, 
     me.announcement ? el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement) : null,
-    el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mi saldo'), el('div', { class: 'bal' }, Number(me.balance).toFixed(2), el('small', {}, 'USDT')),
-      cupT(me.balance) ? el('div', { style: 'font-weight:700;font-size:.95rem' }, cupT(me.balance)) : null,
-      cupM(me.balance) ? el('div', { style: 'font-weight:700;font-size:.95rem' }, cupM(me.balance)) : null,
+    el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mis saldos'),
+      el('div', { class: 'bals' }, ...CURS.map(c => el('div', {}, el('span', {}, CUR_ICON[c] + ' ' + CUR_LONG[c]),
+        el('b', {}, c === 'usdt' ? Number(bal[c]).toFixed(2) : Math.round(bal[c]).toLocaleString('es'), el('small', {}, c === 'usdt' ? ' USDT' : ' CUP'))))),
       el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo'))),
     el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
 
@@ -375,8 +391,7 @@ async function resellerView() {
     put(out, box, card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
       el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null,
         byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null),
-      el('div', { class: 'r' }, el('div', {}, usdt(o.price)),
-        ...priceLines(o.price).map(t => el('div', { class: 'mut', style: 'font-size:.72rem' }, t)), tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')));
+      el('div', { class: 'r' }, el('div', {}, money(o.price, o.currency)), tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')));
   }
   if (rtab === 'saldo') {
     // Sub-pestañas: 3 métodos de depósito
@@ -386,14 +401,14 @@ async function resellerView() {
       methods.length ? depositForm(depMethod) : card('Pedir saldo', el('div', { class: 'mut' }, 'El administrador todavía no configuró ninguna forma de pago. Escríbele para recargar saldo.')),
       card('Mis solicitudes', reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => el('div', {},
         el('div', { class: 'l' }, el('div', {}, `#${r.id} · ${METHOD_L[r.method] || 'USDT'}`),
-          el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.amount_cup ? ' · ' + Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '') + (r.note ? ' · ' + r.note : '')),
+          el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.note ? ' · ' + r.note : '')),
           r.status === 'pending' && r.verify === 'wait' ? el('div', { class: 'mut' }, '⏳ ' + (r.verify_msg || 'Confirmando en BSC…')) : null,
           r.status === 'pending' && r.verify !== 'wait' ? el('div', { class: 'mut' }, 'En revisión por el administrador') : null,
           r.admin_note ? el('div', { class: 'mut' }, r.admin_note) : null),
-        el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? (r.amount_cup ? Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '—') : (r.status === 'approved' ? '' : '≈ ') + usdt(r.approved ?? r.chain_amount ?? r.amount)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')),
+        el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')),
       card('Movimientos de saldo', led.length ? el('div', { class: 'list' }, ...led.map(l => el('div', {},
         el('div', { class: 'l' }, el('div', {}, { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' }[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
-        el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + usdt(l.amount))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
+        el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + money(l.amount, l.currency))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
   }
   if (rtab === 'cuenta') {
     put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')));
@@ -443,7 +458,7 @@ async function adminView() {
       (() => {
         const S = st.settings, rt = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_transfer || '', placeholder: 'Ej. 400' }),
           rm = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_mobile || '', placeholder: 'Ej. 300' });
-        return card('Tasas CUP (solo para mostrar)', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'CUP por cada 1 USDT. Tus revendedores verán el equivalente en CUP debajo de cada precio. Se cobra siempre en USDT. 0 = no mostrar.'),
+        return card('Tasas CUP (para precios)', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'CUP por cada 1 USDT. Solo sirven para calcular el precio en CUP de cada paquete (precio USDT × tasa). Los saldos CUP de tus revendedores no se convierten. 0 = no se puede pagar con ese saldo.'),
           el('div', { class: 'mut' }, 'Tasa transferencia bancaria'), el('div', { class: 'row' }, rt, act('Guardar transferencia', () => api('POST', '/api/admin/settings', { rate_transfer: rt.value || 0 }), '')),
           el('div', { class: 'mut' }, 'Tasa saldo móvil'), el('div', { class: 'row' }, rm, act('Guardar saldo móvil', () => api('POST', '/api/admin/settings', { rate_mobile: rm.value || 0 }), '')));
       })(),
@@ -502,19 +517,22 @@ async function adminView() {
         const mLabel = METHOD_L[r.method] || 'USDT';
         return el('div', { style: 'display:block' },
           el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-            el('div', { class: 'l' }, el('div', {}, `${r.username} · #${r.id} · ${mLabel}`), el('div', { class: 'mut' }, r.created_at + (r.amount_cup ? ' · ' + Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '') + (r.note ? ' · ' + r.note : '')),
+            el('div', { class: 'l' }, el('div', {}, `${r.username} · #${r.id} · ${mLabel}`), el('div', { class: 'mut' }, r.created_at + (r.note ? ' · ' + r.note : '')),
               r.tx_hash ? el('div', { class: 'mut' }, el('a', { href: 'https://bscscan.com/tx/' + r.tx_hash, target: '_blank', rel: 'noopener' }, 'Ver en BscScan: ' + r.tx_hash.slice(0, 12) + '…')) : null,
               r.chain_from ? el('div', { class: 'mut' }, 'Desde ' + r.chain_from.slice(0, 8) + '…' + r.chain_from.slice(-6) + (r.wallet_owner ? ` (billetera de ${r.wallet_owner})` : ' (nueva)')) : null,
               r.amount != null && r.chain_amount != null && r.amount !== r.chain_amount ? el('div', { class: 'mut' }, `Dijo ${usdt(r.amount)}, llegó ${usdt(r.chain_amount)}`) : null,
               r.admin_note ? el('div', { class: 'mut' }, r.admin_note) : null),
-            el('div', { class: 'r' }, el('div', { style: 'font-weight:800' }, show == null ? '—' : usdt(show)), tag(r.status, REQ))),
+            el('div', { class: 'r' }, el('div', { style: 'font-weight:800' }, show == null ? '—' : money(show, r.currency)), tag(r.status, REQ))),
           r.status === 'pending' && (r.verify_msg || r.tx_hash) ? el('div', { class: 'msg ' + v[1] }, v[0] + (r.verify_msg ? ' · ' + r.verify_msg : '')) : null,
           r.has_image ? vb : null, holder,
           r.status === 'pending' ? el('div', { class: 'acts' },
             act('Aprobar', async () => {
-              const cupTxt = r.amount_cup ? `\nDijo que envió ${Math.round(r.amount_cup).toLocaleString('es')} CUP por ${METHOD_L[r.method].toLowerCase()}.\nCompruébalo en tu ${r.method === 'mobile' ? 'teléfono' : 'banco'} antes de aprobar.` : '';
-              const a = prompt(`Monto a abonar a ${r.username} (USDT):${cupTxt}`, show == null ? '' : Number(show).toFixed(2)); if (a === null) throw new Error('Cancelado');
-              if (!(Number(a.replace(',', '.')) > 0)) throw new Error('Escribe el monto en USDT a abonar.');
+              const cup = r.currency !== 'usdt';
+              const cupTxt = cup ? `\nDijo que envió ${money(r.amount, r.currency)}\nCompruébalo en tu ${r.method === 'mobile' ? 'teléfono' : 'banco'} antes de aprobar.` : '';
+              const a = prompt(`Monto a abonar a ${r.username} en ${CUR_LONG[r.currency]}:${cupTxt}`, show == null ? '' : cup ? String(Math.round(show)) : Number(show).toFixed(2)); if (a === null) throw new Error('Cancelado');
+              const n = Number(a.replace(',', '.'));
+              if (!(n > 0)) throw new Error('Escribe el monto a abonar.');
+              if (cup && !Number.isInteger(n)) throw new Error('El monto en CUP debe ser entero.');
               const trust = !!(r.chain_from && !r.wallet_owner) && confirm(`¿Confiar en la billetera ${r.chain_from.slice(0, 8)}… para ${r.username}?\n\nSus próximos pagos desde ella se aprobarán solos.\nPulsa Cancelar si es de un exchange (Binance, etc.), porque esas billeteras las comparten muchas personas.`);
               await api('POST', '/api/admin/topup-decide', { id: r.id, approve: true, amount: a.replace(',', '.'), trust_wallet: trust });
             }, ''),
@@ -607,9 +625,12 @@ async function adminView() {
     card('Revendedores', users.some(u => !u.pending) ? el('div', { class: 'list' }, ...users.filter(u => !u.pending).map(r => el('div', { style: 'display:block' },
       el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
         el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`)),
-        el('div', { style: 'font-size:1.15rem;font-weight:800' }, usdt(r.balance))),
+        el('div', { style: 'text-align:right;font-weight:800;line-height:1.35' }, ...CURS.map(c => el('div', { style: c === 'usdt' ? 'font-size:1.1rem' : 'font-size:.9rem' }, money((r.balances || { usdt: r.balance })[c] || 0, c))))),
       el('div', { class: 'acts' },
-        act('+ Saldo', async () => { const a = prompt(`Monto a abonar a ${r.username} en USDT (negativo para restar):`); if (a) await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.') }); }, ''),
+        ...CURS.map(c => act('± ' + CUR_S[c], async () => {
+          const a = prompt(`Saldo ${CUR_LONG[c]} de ${r.username}\nMonto a abonar (negativo para restar):`); if (!a) throw new Error('Cancelado');
+          await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.'), currency: c });
+        }, c === 'usdt' ? '' : 'sec')),
         act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
         act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
         act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, 'Aún no tienes revendedores.')));
@@ -620,7 +641,7 @@ async function adminView() {
       orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', { style: 'display:block' },
         el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
           el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
-          el('div', { class: 'r' }, el('div', {}, usdt(o.price)), el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2)), tag(o.status))),
+          el('div', { class: 'r' }, el('div', {}, money(o.paid ?? o.price, o.currency)), el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2) + ' USDT'), tag(o.status))),
         o.detail ? el('div', { class: 'mut', style: 'margin-top:4px' }, o.detail) : null,
         o.status === 'unknown' ? el('div', { class: 'acts' },
           act('Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
