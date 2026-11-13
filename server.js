@@ -59,6 +59,8 @@ const upOrder = (id, set, filter = {}) => C.orders.updateOne({ _id: id, ...filte
 const SETTINGS = {
   rate_transfer: { def: 0, check: v => Number(v) >= 0 && Number(v) <= 100000, cast: Number },   // CUP por 1 USDT (transferencia)
   rate_mobile: { def: 0, check: v => Number(v) >= 0 && Number(v) <= 100000, cast: Number },     // CUP por 1 USDT (saldo móvil)
+  payment_transfer: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() }, // datos de pago transferencia
+  payment_mobile: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },   // datos de pago saldo móvil
   registration: { def: 'approval', check: v => ['off', 'approval', 'open'].includes(v), cast: String },
   default_markup: { def: 10, check: v => Number(v) >= 0 && Number(v) <= 100, cast: Number },
   announcement: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },
@@ -91,7 +93,9 @@ route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
   send(res, 200, { username: u.username, role: u.role, balance: u.balance_cents / 100, markup_pct: u.markup_pct, mode: MODE,
-    rates: { transfer: st.rate_transfer, mobile: st.rate_mobile }, announcement: st.announcement });
+    rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
+    payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
+    announcement: st.announcement });
 });
 
 // Registro público de revendedores (correo + contraseña). Según el ajuste: cerrado, con aprobación del admin o abierto.
@@ -605,32 +609,55 @@ route('GET', '/api/me-extra', 'any', async (req, res, u) => {
 const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 const short = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '';
 
-route('GET', '/api/deposit-info', 'any', async (req, res) =>
-  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf }));
+route('GET', '/api/deposit-info', 'any', async (req, res) => {
+  const st = await getSettings();
+  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf,
+    payment_transfer: st.payment_transfer, payment_mobile: st.payment_mobile,
+    rates: { transfer: st.rate_transfer, mobile: st.rate_mobile } });
+});
 
 route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
+  const method = ['usdt', 'transfer', 'mobile'].includes(b.method) ? b.method : 'usdt';
   const hash = String(b.tx_hash || '').trim().toLowerCase();
   if (hash && !BSC.isHash(hash)) return send(res, 400, { error: 'El hash no es válido. Debe empezar por 0x y tener 66 caracteres.' });
   const cents = b.amount === undefined || b.amount === '' ? null : toCents(b.amount);
-  if (cents !== null && !(cents >= 100 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido (mínimo 1 USDT)' });
-  if (!hash && cents === null) return send(res, 400, { error: 'Pega el hash de la transacción (o indica el monto si pagaste de otra forma).' });
+  if (method === 'usdt') {
+    if (cents !== null && !(cents >= 100 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido (mínimo 1 USDT)' });
+    if (!hash && cents === null) return send(res, 400, { error: 'Pega el hash de la transacción (o indica el monto si pagaste de otra forma).' });
+  } else {
+    // Transferencia / saldo móvil: monto en CUP obligatorio
+    const cupCents = b.amount_cup === undefined || b.amount_cup === '' ? null : Math.round(Number(String(b.amount_cup).replace(',', '.')) * 100);
+    if (!(cupCents > 0 && cupCents <= 100000000)) return send(res, 400, { error: 'Indica el monto que enviaste en CUP.' });
+    // Convertir CUP a USDT usando la tasa del admin para saber cuánto abonar
+    const st = await getSettings();
+    const rate = method === 'transfer' ? st.rate_transfer : st.rate_mobile;
+    const usdtCents = rate > 0 ? Math.round(cupCents / rate) : null; // centavos de USDT
+    // Se guarda el monto CUP y el equivalente calculado; el admin puede ajustar
+    b._cup_cents = cupCents; b._usdt_equiv = usdtCents;
+  }
   const img = b.image ? String(b.image) : null;
   if (img && (img.length > 2400000 || !IMG_RE.test(img))) return send(res, 400, { error: 'La imagen no es válida o es muy grande' });
   if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending' }) >= 3) return send(res, 429, { error: 'Ya tienes 3 solicitudes pendientes. Espera a que se revisen.' });
   const id = await nextId('topup_requests');
-  const doc = { _id: id, user_id: u.id, amount_cents: cents, note: String(b.note || '').slice(0, 300), image: img, status: 'pending', admin_note: null,
+  const doc = { _id: id, user_id: u.id, method,
+    amount_cents: method === 'usdt' ? cents : (b._usdt_equiv || null),
+    amount_cup: method !== 'usdt' ? b._cup_cents : null,
+    note: String(b.note || '').slice(0, 300), image: img, status: 'pending', admin_note: null,
     approved_cents: null, created_at: now(), decided_at: null, chain: null,
-    verify: hash ? (BSC.enabled() ? 'wait' : 'manual') : 'manual', verify_msg: hash && !BSC.enabled() ? 'Verificación automática no configurada' : null };
-  if (hash) doc.tx_hash = hash; // único: el mismo pago no se puede usar dos veces
+    verify: method !== 'usdt' ? 'manual' : (hash ? (BSC.enabled() ? 'wait' : 'manual') : 'manual'),
+    verify_msg: method !== 'usdt' ? null : (hash && !BSC.enabled() ? 'Verificación automática no configurada' : null) };
+  if (hash) doc.tx_hash = hash;
   try { await C.topup_requests.insertOne(doc); }
   catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ese hash ya se usó en otra solicitud.' }); throw e; }
-  if (hash && BSC.enabled()) {
+  if (method === 'usdt' && hash && BSC.enabled()) {
     const r = await verifyDeposit(id);
     if (r === 'approved') return send(res, 201, { ok: true, id, auto: 'approved', message: 'Pago verificado en la blockchain. Saldo abonado.' });
     if (r === 'wait') return send(res, 201, { ok: true, id, auto: 'wait', message: 'Pago recibido. Esperando confirmaciones en BSC; se abona solo en unos minutos.' });
     return send(res, 201, { ok: true, id, auto: 'manual', message: 'Solicitud enviada. El administrador la revisará.' });
   }
-  TG.notifyAdmins(`💰 Solicitud de saldo #${id} (revisión manual)\n${u.username}: ${cents !== null ? (cents / 100).toFixed(2) + ' USDT' : ''}${hash ? '\nHash: ' + hash : ''}`).catch(() => {});
+  const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
+  const cupInfo = b._cup_cents ? ` · ${(b._cup_cents / 100).toFixed(0)} CUP` : '';
+  TG.notifyAdmins(`💰 Solicitud de saldo #${id} (${METHOD_L[method]})\n${u.username}: ${cents !== null ? (cents / 100).toFixed(2) + ' USDT' : (b._usdt_equiv ? '~' + (b._usdt_equiv / 100).toFixed(2) + ' USDT' : '')}${cupInfo}${hash ? '\nHash: ' + hash : ''}`).catch(() => {});
   send(res, 201, { ok: true, id, auto: 'manual', message: 'Solicitud enviada. El administrador la revisará.' });
 });
 
@@ -685,7 +712,9 @@ async function recheckDeposits() {
   for (const t of await C.topup_requests.find({ status: 'pending', verify: 'wait' }).sort({ _id: 1 }).limit(10).toArray()) await verifyDeposit(t._id);
 }
 
-const trOut = (r, admin) => ({ id: r._id, amount: r.amount_cents == null ? null : r.amount_cents / 100, approved: r.approved_cents == null ? null : r.approved_cents / 100,
+const trOut = (r, admin) => ({ id: r._id, method: r.method || 'usdt',
+  amount: r.amount_cents == null ? null : r.amount_cents / 100, approved: r.approved_cents == null ? null : r.approved_cents / 100,
+  amount_cup: r.amount_cup == null ? null : r.amount_cup / 100,
   note: r.note, status: r.status, admin_note: r.admin_note, has_image: !!r.image, created_at: fmt(r.created_at), decided_at: fmt(r.decided_at),
   tx_hash: r.tx_hash || null, verify: r.verify || 'manual', verify_msg: r.verify_msg || null,
   chain_amount: r.chain ? r.chain.cents / 100 : null, chain_from: admin && r.chain ? r.chain.from : undefined });
