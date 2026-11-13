@@ -26,12 +26,13 @@ const tag = (s, map = STATUS) => el('span', { class: 'tag ' + s }, map[s] || s);
 const card = (title, ...kids) => el('div', { class: 'card' }, title ? el('h2', {}, title) : null, ...kids);
 const groupBy = (arr, f) => arr.reduce((m, x) => { const k = f(x); (m.get(k) || m.set(k, []).get(k)).push(x); return m; }, new Map());
 let timer = null, flash = null;
-// Vista en CUP (solo visual: todo se cobra en USDT). La elección se recuerda en este teléfono.
-let cupMode = ''; try { cupMode = localStorage.getItem('cup') || ''; } catch {}
 let rates = { transfer: 0, mobile: 0 };
-const CUPL = { transfer: 'CUP transferencia', mobile: 'CUP saldo móvil' };
-const cupVal = n => { const r = rates[cupMode]; return cupMode && r > 0 ? Math.ceil(Number(n) * r) : null; };
-const cup = n => { const v = cupVal(n); return v === null ? null : '≈ ' + v.toLocaleString('es') + ' CUP'; };
+const CUPL = { transfer: 'CUP transf.', mobile: 'CUP saldo' };
+const cupT = n => rates.transfer > 0 ? '≈ ' + Math.ceil(Number(n) * rates.transfer).toLocaleString('es') + ' CUP transf.' : null;
+const cupM = n => rates.mobile > 0 ? '≈ ' + Math.ceil(Number(n) * rates.mobile).toLocaleString('es') + ' CUP saldo' : null;
+/** Muestra los precios en las 3 monedas a la vez (USDT siempre, CUP transf. y CUP saldo cuando haya tasa). */
+const priceLines = n => [cupT(n), cupM(n)].filter(Boolean);
+const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
 
 const REG = { ID: 'Indonesia', BR: 'Brasil', EU: 'Europa', LATAM: 'Latinoamérica', US: 'Estados Unidos', NA: 'Norteamérica', SG: 'Singapur', MY: 'Malasia',
   TH: 'Tailandia', VN: 'Vietnam', PH: 'Filipinas', IN: 'India', MENA: 'Medio Oriente y Norte de África', ME: 'Medio Oriente', TW: 'Taiwán', KR: 'Corea',
@@ -128,7 +129,6 @@ async function resellerView() {
   const [me, products, orders, led, reqs, extra, dep] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'),
     api('GET', '/api/ledger'), api('GET', '/api/topup-requests'), api('GET', '/api/me-extra'), api('GET', '/api/deposit-info')]);
   rates = me.rates || rates;
-  if (cupMode && !(rates[cupMode] > 0)) cupMode = '';
   const out = $('app'); out.replaceChildren();
   const byId = new Map(products.map(p => [p.id, p]));
   const fams = groupBy(products, p => p.family);
@@ -159,7 +159,8 @@ async function resellerView() {
     const n = vars.size > 1 ? 3 : 2;
     buy.append(el('h3', {}, n + '. Elige el paquete'),
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
-        shortName(p.name), el('b', {}, usdt(p.price)), cup(p.price) ? el('span', { class: 'mut', style: 'display:block;font-size:.78rem' }, cup(p.price)) : null))));
+        shortName(p.name), el('b', {}, usdt(p.price)),
+        ...priceLines(p.price).map(t => el('span', { class: 'mut', style: 'display:block;font-size:.75rem' }, t))))));
     const p = list.find(x => x.id === pick.product);
     if (!p) return;
     const inputs = {};
@@ -194,7 +195,8 @@ async function resellerView() {
     const btn = el('button', {}, `Enviar · ${usdt(p.price)}`);
     btn.onclick = async () => {
       const t = target();
-      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\npor ${usdt(p.price)}${cup(p.price) ? ' (' + cup(p.price) + ' ' + CUPL[cupMode].replace('CUP ', '') + ')' : ''}?`)) return;
+      const extra = priceLines(p.price).join('\n');
+      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\npor ${usdt(p.price)}${extra ? '\n' + extra : ''}?`)) return;
       btn.disabled = true;
       try {
         const d = await api('POST', '/api/orders', { product_id: p.id, target: t });
@@ -219,50 +221,84 @@ async function resellerView() {
     rtab = 'recargar'; scrollTo3 = true; resellerView();
   };
 
-  // Pedir saldo: USDT BEP20 con hash (se verifica solo) o, si algo no cuadra, revisión manual
-  const reqBox = el('div');
-  const hash = el('input', { placeholder: 'Hash de la transacción (0x…)', autocomplete: 'off', spellcheck: 'false' });
-  const amount = el('input', { type: 'number', inputmode: 'decimal', min: '1', step: '0.01', placeholder: 'Monto enviado en USDT' });
-  const note = el('input', { placeholder: 'Nota (opcional)' });
-  const file = el('input', { type: 'file', accept: 'image/*' });
-  const preview = el('div');
-  let image = null;
-  file.onchange = async () => {
-    image = null; preview.replaceChildren();
-    if (!file.files[0]) return;
-    try { image = await shrinkImage(file.files[0]); preview.append(el('img', { src: image, class: 'proof', alt: 'Comprobante' })); }
-    catch (e) { msg(reqBox, e.message, 'err'); }
-  };
-  const send = el('button', {}, 'Enviar');
-  send.onclick = async () => {
-    send.disabled = true; msg(reqBox, 'Verificando el pago…', 'warn');
-    try {
-      const d = await api('POST', '/api/topup-requests', { tx_hash: hash.value.trim(), amount: amount.value.replace(',', '.'), note: note.value, image });
-      flash = [d.message, d.auto === 'approved' ? 'ok' : d.auto === 'wait' ? 'warn' : 'ok']; rtab = 'saldo'; resellerView(); return;
-    } catch (e) { msg(reqBox, e.message, 'err'); }
-    send.disabled = false;
-  };
-  const copyBtn = el('button', { class: 'sec sm' }, 'Copiar');
-  copyBtn.onclick = async () => {
-    try { await navigator.clipboard.writeText(dep.wallet); copyBtn.textContent = '✓ Copiada'; }
-    catch { prompt('Copia la dirección:', dep.wallet); }
-  };
-  const walletCard = dep.wallet ? card('1. Envía USDT a esta billetera',
-    el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si lo envías por otra red (TRC20, ERC20…) el dinero se pierde.'),
-    el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn),
-    el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes enviar cualquier monto (mínimo 1 USDT). Se te abona lo que llegue a la billetera.'))
-    : card('Pedir saldo', el('div', { class: 'mut' }, 'El administrador todavía no configuró su billetera. Pídele los datos de pago.'));
-  const manual = el('details', { class: 'regd' }, el('summary', {}, el('span', { class: 'mut' }, '¿No tienes el hash? Revisión manual ›')),
-    el('div', { class: 'row' }, amount), el('div', { class: 'row' }, file), preview);
+  // --- Sub-pestaña dentro de "Pedir saldo" (usdt / transfer / mobile) ---
+  let depMethod = 'usdt'; try { depMethod = sessionStorage.getItem('depM') || 'usdt'; } catch {}
+  /** Construye el formulario de depósito según el método elegido. */
+  function depositForm(method) {
+    const reqBox = el('div');
+    let image = null;
+    const file = el('input', { type: 'file', accept: 'image/*' });
+    const preview = el('div');
+    file.onchange = async () => {
+      image = null; preview.replaceChildren();
+      if (!file.files[0]) return;
+      try { image = await shrinkImage(file.files[0]); preview.append(el('img', { src: image, class: 'proof', alt: 'Comprobante' })); }
+      catch (e) { msg(reqBox, e.message, 'err'); }
+    };
+    const note = el('input', { placeholder: 'Nota (opcional)' });
+
+    if (method === 'usdt') {
+      const hash = el('input', { placeholder: 'Hash de la transacción (0x…)', autocomplete: 'off', spellcheck: 'false' });
+      const amount = el('input', { type: 'number', inputmode: 'decimal', min: '1', step: '0.01', placeholder: 'Monto enviado en USDT' });
+      const sendBtn = el('button', {}, 'Enviar solicitud');
+      sendBtn.onclick = async () => {
+        sendBtn.disabled = true; msg(reqBox, 'Verificando el pago…', 'warn');
+        try {
+          const d = await api('POST', '/api/topup-requests', { method: 'usdt', tx_hash: hash.value.trim(), amount: amount.value.replace(',', '.'), note: note.value, image });
+          flash = [d.message, d.auto === 'approved' ? 'ok' : d.auto === 'wait' ? 'warn' : 'ok']; rtab = 'saldo'; resellerView(); return;
+        } catch (e) { msg(reqBox, e.message, 'err'); }
+        sendBtn.disabled = false;
+      };
+      const copyBtn = el('button', { class: 'sec sm' }, 'Copiar');
+      copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(dep.wallet); copyBtn.textContent = '✓ Copiada'; } catch { prompt('Copia:', dep.wallet); } };
+      const manual = el('details', { class: 'regd' }, el('summary', {}, el('span', { class: 'mut' }, '¿No tienes el hash? Revisión manual ›')),
+        el('div', { class: 'row' }, amount), el('div', { class: 'row' }, file), preview);
+      return el('div', {},
+        dep.wallet ? card('1. Envía USDT a esta billetera',
+          el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si envías por otra red el dinero se pierde.'),
+          el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn),
+          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Mínimo 1 USDT. Se te abona lo que llegue.'))
+        : card('USDT BEP20', el('div', { class: 'mut' }, 'El admin todavía no configuró su billetera.')),
+        card('2. Pega el hash del envío', el('div', { class: 'mut', style: 'margin-bottom:8px' },
+          dep.auto ? 'Se comprueba en la blockchain y se te abona solo.' : 'El admin revisará el pago.'),
+          el('div', { class: 'row' }, hash), el('div', { class: 'row' }, note), manual, el('div', { class: 'acts' }, sendBtn), reqBox));
+    }
+
+    // Transferencia bancaria o Saldo móvil
+    const info = method === 'transfer' ? dep.payment_transfer : dep.payment_mobile;
+    const rate = method === 'transfer' ? dep.rates.transfer : dep.rates.mobile;
+    const label = method === 'transfer' ? 'Transferencia bancaria' : 'Saldo móvil';
+    const cupAmt = el('input', { type: 'number', inputmode: 'numeric', min: '1', placeholder: 'Monto enviado en CUP' });
+    const equiv = el('div', { class: 'mut', style: 'margin-top:4px' });
+    cupAmt.oninput = () => {
+      const v = Number(cupAmt.value);
+      equiv.textContent = v > 0 && rate > 0 ? `≈ ${(v / rate).toFixed(2)} USDT (tasa ${rate} CUP/USDT)` : '';
+    };
+    const sendBtn = el('button', {}, 'Enviar solicitud');
+    sendBtn.onclick = async () => {
+      sendBtn.disabled = true; msg(reqBox, 'Enviando…', 'warn');
+      try {
+        const d = await api('POST', '/api/topup-requests', { method, amount_cup: cupAmt.value.replace(',', '.'), note: note.value, image });
+        flash = [d.message, 'ok']; rtab = 'saldo'; resellerView(); return;
+      } catch (e) { msg(reqBox, e.message, 'err'); }
+      sendBtn.disabled = false;
+    };
+    return el('div', {},
+      info ? card(`1. ${label}: datos de pago`, el('div', { style: 'white-space:pre-wrap;font-size:.95rem;line-height:1.5' }, info),
+        rate > 0 ? el('div', { class: 'mut', style: 'margin-top:8px' }, `Tasa: ${rate} CUP = 1 USDT`) : null)
+      : card(label, el('div', { class: 'mut' }, `El admin todavía no configuró los datos de ${label.toLowerCase()}.`)),
+      card('2. Confirma el pago', el('div', { class: 'mut', style: 'margin-bottom:8px' }, `Indica cuánto enviaste en CUP por ${label.toLowerCase()}. El admin revisará y te abonará el equivalente en USDT.`),
+        el('div', { class: 'row' }, cupAmt), equiv, el('div', { class: 'row' }, note),
+        el('div', { class: 'mut', style: 'margin:6px 0' }, 'Comprobante (opcional):'), el('div', { class: 'row' }, file), preview,
+        el('div', { class: 'acts' }, sendBtn), reqBox));
+  }
+
   const tabs = [['recargar', 'Recargar'], ['historial', 'Mis recargas'], ['saldo', 'Pedir saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', 'Cuenta']];
   out.append(
     me.announcement ? el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement) : null,
     el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mi saldo'), el('div', { class: 'bal' }, Number(me.balance).toFixed(2), el('small', {}, 'USDT')),
-      cup(me.balance) ? el('div', { style: 'font-weight:700' }, cup(me.balance) + ' · ' + CUPL[cupMode].replace('CUP ', '')) : null,
-      (rates.transfer > 0 || rates.mobile > 0) ? el('div', { class: 'chips', style: 'margin-top:10px' }, el('span', { class: 'mut', style: 'align-self:center' }, 'Ver en:'),
-        ...[['', 'Solo USDT'], ['transfer', 'CUP transf.'], ['mobile', 'CUP saldo']].filter(([k]) => !k || rates[k] > 0).map(([k, l]) =>
-          el('button', { class: 'chip' + (cupMode === k ? ' on' : ''), style: cupMode === k ? 'background:#000' : 'background:#ffffff26;border-color:#ffffff40;color:#fff',
-            onclick: () => { cupMode = k; try { localStorage.setItem('cup', k); } catch {} resellerView(); } }, l))) : null,
+      cupT(me.balance) ? el('div', { style: 'font-weight:700;font-size:.95rem' }, cupT(me.balance)) : null,
+      cupM(me.balance) ? el('div', { style: 'font-weight:700;font-size:.95rem' }, cupM(me.balance)) : null,
       el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo'))),
     el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
 
@@ -274,15 +310,20 @@ async function resellerView() {
     out.append(box, card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
       el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null,
         byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null),
-      el('div', { class: 'r' }, el('div', {}, usdt(o.price)), cup(o.price) ? el('div', { class: 'mut', style: 'font-size:.75rem' }, cup(o.price)) : null, tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')));
+      el('div', { class: 'r' }, el('div', {}, usdt(o.price)),
+        ...priceLines(o.price).map(t => el('div', { class: 'mut', style: 'font-size:.72rem' }, t)), tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')));
   }
   if (rtab === 'saldo') {
-    out.append(box, walletCard,
-      card('2. Pega el hash del envío', el('div', { class: 'mut', style: 'margin-bottom:8px' },
-        dep.auto ? 'El panel comprueba el pago en la blockchain y te abona el saldo solo, normalmente en menos de un minuto.' : 'El administrador revisará el pago y te abonará el saldo.'),
-        el('div', { class: 'row' }, hash), el('div', { class: 'row' }, note), manual, el('div', { class: 'acts' }, send), reqBox),
+    // Sub-pestañas: 3 métodos de depósito
+    const depTabs = [['usdt', '💲 USDT'], ['transfer', '🏦 Transferencia'], ['mobile', '📱 Saldo móvil']];
+    out.append(box,
+      el('div', { class: 'chips', style: 'justify-content:center;margin-bottom:12px;flex-wrap:wrap' }, ...depTabs.map(([k, l]) =>
+        el('button', { class: 'chip' + (depMethod === k ? ' on' : ''), style: depMethod === k ? '' : 'background:#ffffff18;border-color:#ffffff40;color:#fff',
+          onclick: () => { depMethod = k; try { sessionStorage.setItem('depM', k); } catch {} resellerView(); } }, l))),
+      depositForm(depMethod),
       card('Mis solicitudes', reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => el('div', {},
-        el('div', { class: 'l' }, el('div', {}, `Solicitud #${r.id}`), el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.note ? ' · ' + r.note : '')),
+        el('div', { class: 'l' }, el('div', {}, `#${r.id} · ${METHOD_L[r.method] || 'USDT'}`),
+          el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.amount_cup ? ' · ' + Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '') + (r.note ? ' · ' + r.note : '')),
           r.status === 'pending' && r.verify === 'wait' ? el('div', { class: 'mut' }, '⏳ ' + (r.verify_msg || 'Confirmando en BSC…')) : null,
           r.status === 'pending' && r.verify !== 'wait' ? el('div', { class: 'mut' }, 'En revisión por el administrador') : null,
           r.admin_note ? el('div', { class: 'mut' }, r.admin_note) : null),
@@ -368,20 +409,28 @@ async function adminView() {
       catch (e) { alert(e.message); b.disabled = false; }
     };
     const VER = { wait: ['⏳', 'warn'], verified: ['✓ Verificado en BSC', 'ok'], bad: ['✗ No cuadra', 'err'], manual: ['Manual', 'warn'], ok: ['✓ Automático', 'ok'] };
+    // Payment info textareas
+    const ptTA = el('textarea', { rows: '3', placeholder: 'Ej.: Banco X · Cuenta 1234 · Nombre Y', style: 'width:100%' }); ptTA.value = dep.payment_transfer || '';
+    const pmTA = el('textarea', { rows: '3', placeholder: 'Ej.: +53 5XXXXXXX · Transfermóvil', style: 'width:100%' }); pmTA.value = dep.payment_mobile || '';
     out.append(
-      card('Depósitos USDT BEP20', dep.wallet
+      card('USDT BEP20', dep.wallet
         ? el('div', {}, el('div', { class: 'mut' }, 'Billetera que ven tus revendedores:'), el('div', { class: 'addr' }, dep.wallet),
           el('div', { class: 'mut', style: 'margin-top:6px' }, dep.auto ? `Verificación automática activa (${dep.min_confirmations} confirmaciones).` : 'Verificación automática desactivada: falta BSC_RPC_URL en Render.'))
         : el('div', { class: 'mut' }, 'Sin configurar. En Render agrega USDT_WALLET (tu dirección BEP20) y BSC_RPC_URL (tu URL de NodeReal).')),
+      card('Datos de Transferencia bancaria', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por transferencia. Deja vacío para ocultar ese método.'), ptTA,
+        el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_transfer: ptTA.value }), ''))),
+      card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
+        el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
       card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.'),
       reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => {
         const holder = el('div'), vb = el('button', { class: 'ghost' }, 'Ver comprobante');
         vb.onclick = () => showImg(r, holder, vb);
         const v = r.verify === 'verified' && r.wallet_owner && r.wallet_owner !== r.username ? ['⚠ Revisar', 'warn'] : (VER[r.verify] || VER.manual);
         const show = r.approved ?? r.chain_amount ?? r.amount;
+        const mLabel = METHOD_L[r.method] || 'USDT';
         return el('div', { style: 'display:block' },
           el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-            el('div', { class: 'l' }, el('div', {}, `${r.username} · #${r.id}`), el('div', { class: 'mut' }, r.created_at + (r.note ? ' · ' + r.note : '')),
+            el('div', { class: 'l' }, el('div', {}, `${r.username} · #${r.id} · ${mLabel}`), el('div', { class: 'mut' }, r.created_at + (r.amount_cup ? ' · ' + Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '') + (r.note ? ' · ' + r.note : '')),
               r.tx_hash ? el('div', { class: 'mut' }, el('a', { href: 'https://bscscan.com/tx/' + r.tx_hash, target: '_blank', rel: 'noopener' }, 'Ver en BscScan: ' + r.tx_hash.slice(0, 12) + '…')) : null,
               r.chain_from ? el('div', { class: 'mut' }, 'Desde ' + r.chain_from.slice(0, 8) + '…' + r.chain_from.slice(-6) + (r.wallet_owner ? ` (billetera de ${r.wallet_owner})` : ' (nueva)')) : null,
               r.amount != null && r.chain_amount != null && r.amount !== r.chain_amount ? el('div', { class: 'mut' }, `Dijo ${usdt(r.amount)}, llegó ${usdt(r.chain_amount)}`) : null,
