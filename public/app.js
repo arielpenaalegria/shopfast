@@ -1,5 +1,5 @@
 'use strict';
-document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}' }));
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}' }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -11,12 +11,16 @@ const el = (tag, props = {}, ...kids) => {
   return e;
 };
 async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  let r;
+  try { r = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined }); }
+  catch { throw new Error('Sin conexión con el panel. Revisa tu internet e intenta otra vez.'); }
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 && path !== '/api/login') { show('login'); throw new Error('Sesión expirada'); }
   if (!r.ok && r.status !== 202) throw Object.assign(new Error(d.error || 'Error'), { data: d });
   return d;
 }
+/** Como append, pero ignora null/false (si no, el navegador escribe "null" en pantalla). */
+const put = (parent, ...kids) => parent.append(...kids.flat().filter(k => k !== null && k !== undefined && k !== false));
 const msg = (box, text, cls) => { box.replaceChildren(el('div', { class: 'msg ' + cls }, text)); };
 const usdt = n => Number(n).toFixed(2) + ' USDT';          // saldos y precios de revendedores
 const usd = n => 'US$ ' + Number(n).toFixed(2);             // saldo de Central One
@@ -45,18 +49,67 @@ const regionCard = (code, sub, onclick) => el('button', { class: 'reg', onclick 
   el('span', { class: 'chev' }, '›'));
 
 /** Reduce la foto del comprobante (máx. 1280 px, JPEG) para que suba rápido aunque la conexión sea lenta. */
-function shrinkImage(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image(), url = URL.createObjectURL(file);
-    img.onload = () => {
-      const k = Math.min(1, 1280 / Math.max(img.width, img.height));
-      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', 0.72));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer la imagen')); };
-    img.src = url;
-  });
+/** Reduce la foto del comprobante a JPEG (máx. ~1.7 MB). Prueba 3 formas de leerla para que funcione en cualquier móvil. */
+async function shrinkImage(file) {
+  if (!file) throw new Error('No elegiste ninguna imagen');
+  if (file.type && !file.type.startsWith('image/')) throw new Error('El archivo no es una imagen');
+  if (file.size > 25e6) throw new Error('La imagen pesa demasiado (máx. 25 MB)');
+  const loadImg = src => new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = src; });
+  let src = null, url = null;
+  try { if (window.createImageBitmap) src = await createImageBitmap(file); } catch {}
+  if (!src) try { url = URL.createObjectURL(file); src = await loadImg(url); } catch { src = null; }
+  if (!src) try {
+    const data = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(file); });
+    src = await loadImg(data);
+  } catch { src = null; }
+  if (url) URL.revokeObjectURL(url);
+  if (!src || !src.width) throw new Error('No se pudo leer la imagen. Haz una captura de pantalla del comprobante y súbela.');
+  const c = document.createElement('canvas'), ctx = c.getContext('2d');
+  for (const [side, q] of [[1400, 0.75], [1100, 0.65], [850, 0.6], [650, 0.55]]) {
+    const k = Math.min(1, side / Math.max(src.width, src.height));
+    c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); // fondo blanco para PNG transparentes
+    ctx.drawImage(src, 0, 0, c.width, c.height);
+    const out = c.toDataURL('image/jpeg', q);
+    if (out.startsWith('data:image/jpeg') && out.length < 1700000) { if (src.close) src.close(); return out; }
+  }
+  throw new Error('No se pudo comprimir la imagen. Prueba con una captura de pantalla.');
+}
+
+/** Selector de comprobante: botón grande, vista previa y "Quitar". get() devuelve la imagen lista o null. */
+function proofPicker(onErr) {
+  let image = null;
+  const input = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+  const label = el('span', {}, '📷 Adjuntar foto del comprobante');
+  const pick = el('button', { type: 'button', class: 'sec', style: 'width:100%' }, label);
+  const preview = el('div');
+  pick.onclick = () => input.click();
+  input.onchange = async () => {
+    const f = input.files[0]; input.value = '';
+    if (!f) return;
+    pick.disabled = true; label.textContent = '⏳ Procesando imagen…';
+    try {
+      image = await shrinkImage(f);
+      const rm = el('button', { type: 'button', class: 'red sm' }, '✕ Quitar');
+      rm.onclick = () => { image = null; preview.replaceChildren(); label.textContent = '📷 Adjuntar foto del comprobante'; };
+      preview.replaceChildren(el('img', { src: image, class: 'proof', alt: 'Comprobante' }), el('div', { class: 'acts' }, rm));
+      label.textContent = '📷 Cambiar foto';
+    } catch (e) { image = null; preview.replaceChildren(); label.textContent = '📷 Adjuntar foto del comprobante'; onErr(e.message); }
+    pick.disabled = false;
+  };
+  return { node: el('div', { style: 'margin:8px 0' }, input, pick, preview), get: () => image, busy: () => pick.disabled };
+}
+
+/** Muestra los datos de pago del admin con un botón "Copiar" en cada línea que tenga números (tarjeta, teléfono…). */
+function payInfo(text) {
+  return el('div', { class: 'payinfo' }, ...String(text).split('\n').filter(l => l.trim()).map(line => {
+    const digits = line.replace(/[^\d+]/g, '');
+    if (digits.replace('+', '').length < 6) return el('div', { class: 'pl' }, el('span', {}, line));
+    const val = (line.match(/[+\d][\d\s-]{4,}\d/) || [line])[0].replace(/[\s-]/g, '');
+    const b = el('button', { type: 'button', class: 'sec sm' }, 'Copiar');
+    b.onclick = async () => { try { await navigator.clipboard.writeText(val); b.textContent = '✓'; setTimeout(() => b.textContent = 'Copiar', 1500); } catch { prompt('Copia:', val); } };
+    return el('div', { class: 'pl' }, el('span', { style: 'font-weight:700' }, line), b);
+  }));
 }
 
 /** Tarjeta para conectar Telegram y recibir avisos (admin y revendedores). */
@@ -121,6 +174,16 @@ async function boot() {
   } catch { show('login'); }
 }
 
+/** true si el usuario está escribiendo o tiene un formulario a medias (para no refrescar y borrarle lo escrito). */
+let lastTyping = 0;
+document.addEventListener('input', () => { lastTyping = Date.now(); }, true);
+function userBusy() {
+  const a = document.activeElement;
+  if (a && $('app').contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+  if (Date.now() - lastTyping < 60000) return true;
+  return [...$('app').querySelectorAll('input:not([type=file]),textarea')].some(i => i.value.trim()) || !!$('app').querySelector('img.proof:not([data-saved])') || !!document.querySelector('.zoom');
+}
+
 /* =================== REVENDEDOR =================== */
 const pick = { family: null, variant: null, product: null, fill: null };
 let scrollTo3 = false, rtab = 'recargar';
@@ -139,25 +202,25 @@ async function resellerView() {
   const buy = el('div');
   const renderBuy = () => {
     buy.replaceChildren();
-    if (!products.length) return buy.append(el('div', { class: 'mut' }, 'Aún no hay productos disponibles. Pídele al administrador que active juegos.'));
-    buy.append(el('h3', {}, '1. Elige el juego'),
+    if (!products.length) return put(buy, el('div', { class: 'mut' }, 'Aún no hay productos disponibles. Pídele al administrador que active juegos.'));
+    put(buy, el('h3', {}, '1. Elige el juego'),
       el('div', { class: 'chips' }, ...[...fams.keys()].map(f => el('button', { class: 'chip' + (f === pick.family ? ' on' : ''), onclick: () => { pick.family = f; pick.variant = null; pick.product = null; renderBuy(); } }, f))));
     const vars = groupBy(fams.get(pick.family) || [], p => p.variant);
     if (pick.variant && !vars.has(pick.variant)) pick.variant = null;
     if (vars.size === 1) pick.variant = vars.keys().next().value;
     if (vars.size > 1 && !pick.variant) {
-      buy.append(el('h3', {}, '2. ¿Qué región?'),
+      put(buy, el('h3', {}, '2. ¿Qué región?'),
         el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Elige la región de la cuenta del jugador: cada paquete solo sirve en cuentas de su región o servidor.'),
         ...[...vars].sort((x, y) => y[1].length - x[1].length).map(([v, ps]) => regionCard(v, `${ps.length} opciones`, () => { pick.variant = v; pick.product = null; renderBuy(); })));
       return;
     }
-    if (vars.size > 1) buy.append(el('div', { class: 'row', style: 'margin-top:10px;align-items:center' },
+    if (vars.size > 1) put(buy, el('div', { class: 'row', style: 'margin-top:10px;align-items:center' },
       el('span', { class: 'code' }, pick.variant), el('b', {}, regName(pick.variant) || pick.variant),
       el('button', { class: 'ghost', onclick: () => { pick.variant = null; pick.product = null; renderBuy(); } }, '← Cambiar región')));
     const list = (vars.get(pick.variant) || []).slice().sort((a, b) => a.price - b.price);
     if (!list.some(p => p.id === pick.product)) pick.product = null;
     const n = vars.size > 1 ? 3 : 2;
-    buy.append(el('h3', {}, n + '. Elige el paquete'),
+    put(buy, el('h3', {}, n + '. Elige el paquete'),
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
         shortName(p.name), el('b', {}, usdt(p.price)),
         ...priceLines(p.price).map(t => el('span', { class: 'mut', style: 'display:block;font-size:.75rem' }, t))))));
@@ -195,6 +258,9 @@ async function resellerView() {
     const btn = el('button', {}, `Enviar · ${usdt(p.price)}`);
     btn.onclick = async () => {
       const t = target();
+      const empty = p.fields.find(f => !String(t[f.key] || '').trim());
+      if (empty) { msg(vbox, `Falta: ${empty.label}`, 'err'); inputs[empty.key].focus(); return; }
+      for (const k of Object.keys(t)) t[k] = String(t[k]).trim();
       const extra = priceLines(p.price).join('\n');
       if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\npor ${usdt(p.price)}${extra ? '\n' + extra : ''}?`)) return;
       btn.disabled = true;
@@ -206,7 +272,7 @@ async function resellerView() {
       resellerView();
     };
     const step3 = el('h3', {}, (n + 1) + '. Datos del jugador · ' + shortName(p.name));
-    buy.append(step3,
+    put(buy, step3,
       recent.length ? el('div', { class: 'recents' }, el('span', { class: 'mut', style: 'align-self:center' }, 'Recientes:'),
         ...recent.map(t => el('button', { class: 'chip', onclick: () => fillWith(t) }, Object.values(t).join(' · ')))) : null,
       el('div', { class: 'row' }, ...fields), el('div', { class: 'row' }, vbtn, btn), vbox);
@@ -221,80 +287,79 @@ async function resellerView() {
     rtab = 'recargar'; scrollTo3 = true; resellerView();
   };
 
-  // --- Sub-pestaña dentro de "Pedir saldo" (usdt / transfer / mobile) ---
+  // --- "Pedir saldo": 3 métodos (USDT BEP20 / Transferencia / Saldo móvil). Solo se muestran los que el admin configuró. ---
+  const methods = [['usdt', '💲 USDT', !!dep.wallet], ['transfer', '🏦 Transferencia', !!dep.payment_transfer], ['mobile', '📱 Saldo móvil', !!dep.payment_mobile]].filter(m => m[2]);
   let depMethod = 'usdt'; try { depMethod = sessionStorage.getItem('depM') || 'usdt'; } catch {}
+  if (!methods.some(m => m[0] === depMethod)) depMethod = methods.length ? methods[0][0] : null;
   /** Construye el formulario de depósito según el método elegido. */
   function depositForm(method) {
     const reqBox = el('div');
-    let image = null;
-    const file = el('input', { type: 'file', accept: 'image/*' });
-    const preview = el('div');
-    file.onchange = async () => {
-      image = null; preview.replaceChildren();
-      if (!file.files[0]) return;
-      try { image = await shrinkImage(file.files[0]); preview.append(el('img', { src: image, class: 'proof', alt: 'Comprobante' })); }
-      catch (e) { msg(reqBox, e.message, 'err'); }
+    const proof = proofPicker(m => msg(reqBox, m, 'err'));
+    const note = el('input', { placeholder: 'Nota (opcional)', maxlength: '300' });
+    const submit = async (btn, body, waitText) => {
+      if (proof.busy()) return msg(reqBox, 'Espera a que termine de procesarse la foto.', 'warn');
+      btn.disabled = true; msg(reqBox, waitText, 'warn');
+      try {
+        const d = await api('POST', '/api/topup-requests', { ...body, note: note.value.trim(), image: proof.get() });
+        flash = [d.message, d.auto === 'wait' ? 'warn' : 'ok']; rtab = 'saldo'; window.scrollTo(0, 0); resellerView(); return;
+      } catch (e) { msg(reqBox, e.message, 'err'); }
+      btn.disabled = false;
     };
-    const note = el('input', { placeholder: 'Nota (opcional)' });
 
     if (method === 'usdt') {
-      const hash = el('input', { placeholder: 'Hash de la transacción (0x…)', autocomplete: 'off', spellcheck: 'false' });
+      const hash = el('input', { placeholder: 'Hash de la transacción (0x…)', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' });
       const amount = el('input', { type: 'number', inputmode: 'decimal', min: '1', step: '0.01', placeholder: 'Monto enviado en USDT' });
-      const sendBtn = el('button', {}, 'Enviar solicitud');
-      sendBtn.onclick = async () => {
-        sendBtn.disabled = true; msg(reqBox, 'Verificando el pago…', 'warn');
-        try {
-          const d = await api('POST', '/api/topup-requests', { method: 'usdt', tx_hash: hash.value.trim(), amount: amount.value.replace(',', '.'), note: note.value, image });
-          flash = [d.message, d.auto === 'approved' ? 'ok' : d.auto === 'wait' ? 'warn' : 'ok']; rtab = 'saldo'; resellerView(); return;
-        } catch (e) { msg(reqBox, e.message, 'err'); }
-        sendBtn.disabled = false;
+      const sendBtn = el('button', { class: 'big' }, 'Enviar solicitud');
+      sendBtn.onclick = () => {
+        const h = hash.value.trim().replace(/\s+/g, '');
+        if (!h && !amount.value) return msg(reqBox, 'Pega el hash del envío, o abre "¿No tienes el hash?" e indica el monto.', 'err');
+        if (h && !/^0x[0-9a-fA-F]{64}$/.test(h)) return msg(reqBox, 'El hash no es válido: empieza por 0x y tiene 66 caracteres. Cópialo completo desde tu billetera.', 'err');
+        submit(sendBtn, { method: 'usdt', tx_hash: h, amount: amount.value.replace(',', '.') }, h ? 'Verificando el pago…' : 'Enviando…');
       };
-      const copyBtn = el('button', { class: 'sec sm' }, 'Copiar');
+      const copyBtn = el('button', { class: 'sec sm' }, 'Copiar dirección');
       copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(dep.wallet); copyBtn.textContent = '✓ Copiada'; } catch { prompt('Copia:', dep.wallet); } };
       const manual = el('details', { class: 'regd' }, el('summary', {}, el('span', { class: 'mut' }, '¿No tienes el hash? Revisión manual ›')),
-        el('div', { class: 'row' }, amount), el('div', { class: 'row' }, file), preview);
+        el('div', { class: 'mut', style: 'margin:8px 0' }, 'Indica el monto y adjunta una captura del envío. El admin lo revisará.'),
+        el('div', { class: 'row' }, amount));
       return el('div', {},
-        dep.wallet ? card('1. Envía USDT a esta billetera',
+        card('1. Envía USDT a esta billetera',
           el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si envías por otra red el dinero se pierde.'),
           el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn),
-          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Mínimo 1 USDT. Se te abona lo que llegue.'))
-        : card('USDT BEP20', el('div', { class: 'mut' }, 'El admin todavía no configuró su billetera.')),
+          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Mínimo 1 USDT. Se te abona lo que llegue.')),
         card('2. Pega el hash del envío', el('div', { class: 'mut', style: 'margin-bottom:8px' },
-          dep.auto ? 'Se comprueba en la blockchain y se te abona solo.' : 'El admin revisará el pago.'),
-          el('div', { class: 'row' }, hash), el('div', { class: 'row' }, note), manual, el('div', { class: 'acts' }, sendBtn), reqBox));
+          dep.auto ? 'Se comprueba en la blockchain y se te abona solo, normalmente en menos de un minuto.' : 'El admin revisará el pago y te abonará el saldo.'),
+          el('div', { class: 'row' }, hash), manual, el('div', { class: 'row', style: 'margin-top:8px' }, note), proof.node,
+          el('div', { class: 'acts' }, sendBtn), reqBox));
     }
 
-    // Transferencia bancaria o Saldo móvil
+    // Transferencia bancaria o Saldo móvil (siempre revisión manual del admin)
     const info = method === 'transfer' ? dep.payment_transfer : dep.payment_mobile;
-    const rate = method === 'transfer' ? dep.rates.transfer : dep.rates.mobile;
-    const label = method === 'transfer' ? 'Transferencia bancaria' : 'Saldo móvil';
-    const cupAmt = el('input', { type: 'number', inputmode: 'numeric', min: '1', placeholder: 'Monto enviado en CUP' });
-    const equiv = el('div', { class: 'mut', style: 'margin-top:4px' });
+    const rate = Number(method === 'transfer' ? dep.rates.transfer : dep.rates.mobile) || 0;
+    const label = method === 'transfer' ? 'transferencia' : 'saldo móvil';
+    const cupAmt = el('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', placeholder: 'Monto enviado en CUP' });
+    const equiv = el('div', { class: 'mut', style: 'margin:-2px 0 8px;font-weight:700;color:var(--ok)' });
     cupAmt.oninput = () => {
       const v = Number(cupAmt.value);
-      equiv.textContent = v > 0 && rate > 0 ? `≈ ${(v / rate).toFixed(2)} USDT (tasa ${rate} CUP/USDT)` : '';
+      equiv.textContent = v > 0 && rate > 0 ? `Recibirás ≈ ${(Math.floor(v / rate * 100) / 100).toFixed(2)} USDT` : '';
     };
-    const sendBtn = el('button', {}, 'Enviar solicitud');
-    sendBtn.onclick = async () => {
-      sendBtn.disabled = true; msg(reqBox, 'Enviando…', 'warn');
-      try {
-        const d = await api('POST', '/api/topup-requests', { method, amount_cup: cupAmt.value.replace(',', '.'), note: note.value, image });
-        flash = [d.message, 'ok']; rtab = 'saldo'; resellerView(); return;
-      } catch (e) { msg(reqBox, e.message, 'err'); }
-      sendBtn.disabled = false;
+    const sendBtn = el('button', { class: 'big' }, 'Enviar solicitud');
+    sendBtn.onclick = () => {
+      const v = Number(String(cupAmt.value).replace(',', '.'));
+      if (!(v > 0)) return msg(reqBox, 'Escribe cuántos CUP enviaste.', 'err');
+      if (!proof.get()) return msg(reqBox, 'Adjunta la foto o captura del comprobante para que el admin pueda confirmar el pago.', 'err');
+      submit(sendBtn, { method, amount_cup: String(v) }, 'Enviando… (subiendo la foto)');
     };
     return el('div', {},
-      info ? card(`1. ${label}: datos de pago`, el('div', { style: 'white-space:pre-wrap;font-size:.95rem;line-height:1.5' }, info),
-        rate > 0 ? el('div', { class: 'mut', style: 'margin-top:8px' }, `Tasa: ${rate} CUP = 1 USDT`) : null)
-      : card(label, el('div', { class: 'mut' }, `El admin todavía no configuró los datos de ${label.toLowerCase()}.`)),
-      card('2. Confirma el pago', el('div', { class: 'mut', style: 'margin-bottom:8px' }, `Indica cuánto enviaste en CUP por ${label.toLowerCase()}. El admin revisará y te abonará el equivalente en USDT.`),
-        el('div', { class: 'row' }, cupAmt), equiv, el('div', { class: 'row' }, note),
-        el('div', { class: 'mut', style: 'margin:6px 0' }, 'Comprobante (opcional):'), el('div', { class: 'row' }, file), preview,
+      card(`1. Envía por ${label} a:`, payInfo(info),
+        rate > 0 ? el('div', { class: 'mut', style: 'margin-top:10px' }, `Tasa: ${rate.toLocaleString('es')} CUP = 1 USDT`) : null),
+      card('2. Avisa que ya pagaste',
+        el('ol', { class: 'steps' }, el('li', {}, 'Escribe cuántos CUP enviaste.'), el('li', {}, 'Adjunta la captura o foto del comprobante.'), el('li', {}, 'El admin lo confirma y se te abona el saldo en USDT.')),
+        el('div', { class: 'row' }, cupAmt), equiv, el('div', { class: 'row' }, note), proof.node,
         el('div', { class: 'acts' }, sendBtn), reqBox));
   }
 
   const tabs = [['recargar', 'Recargar'], ['historial', 'Mis recargas'], ['saldo', 'Pedir saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', 'Cuenta']];
-  out.append(
+  put(out, 
     me.announcement ? el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement) : null,
     el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mi saldo'), el('div', { class: 'bal' }, Number(me.balance).toFixed(2), el('small', {}, 'USDT')),
       cupT(me.balance) ? el('div', { style: 'font-weight:700;font-size:.95rem' }, cupT(me.balance)) : null,
@@ -304,10 +369,10 @@ async function resellerView() {
 
   if (rtab === 'recargar') {
     renderBuy();
-    out.append(card('Nueva recarga', buy, box, el('div', { class: 'mut', style: 'margin-top:10px' }, 'Una recarga puede tardar desde minutos hasta un par de horas. No la repitas mientras esté "En proceso": podría llegar dos veces.')));
+    put(out, card('Nueva recarga', buy, box, el('div', { class: 'mut', style: 'margin-top:10px' }, 'Una recarga puede tardar desde minutos hasta un par de horas. No la repitas mientras esté "En proceso": podría llegar dos veces.')));
   }
   if (rtab === 'historial') {
-    out.append(box, card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
+    put(out, box, card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
       el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null,
         byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null),
       el('div', { class: 'r' }, el('div', {}, usdt(o.price)),
@@ -315,27 +380,29 @@ async function resellerView() {
   }
   if (rtab === 'saldo') {
     // Sub-pestañas: 3 métodos de depósito
-    const depTabs = [['usdt', '💲 USDT'], ['transfer', '🏦 Transferencia'], ['mobile', '📱 Saldo móvil']];
-    out.append(box,
-      el('div', { class: 'chips', style: 'justify-content:center;margin-bottom:12px;flex-wrap:wrap' }, ...depTabs.map(([k, l]) =>
-        el('button', { class: 'chip' + (depMethod === k ? ' on' : ''), style: depMethod === k ? '' : 'background:#ffffff18;border-color:#ffffff40;color:#fff',
-          onclick: () => { depMethod = k; try { sessionStorage.setItem('depM', k); } catch {} resellerView(); } }, l))),
-      depositForm(depMethod),
+    put(out, box,
+      methods.length > 1 ? el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...methods.map(([k, l]) =>
+        el('button', { class: 'chip' + (depMethod === k ? ' on' : ''), onclick: () => { depMethod = k; try { sessionStorage.setItem('depM', k); } catch {} resellerView(); } }, l))) : null,
+      methods.length ? depositForm(depMethod) : card('Pedir saldo', el('div', { class: 'mut' }, 'El administrador todavía no configuró ninguna forma de pago. Escríbele para recargar saldo.')),
       card('Mis solicitudes', reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => el('div', {},
         el('div', { class: 'l' }, el('div', {}, `#${r.id} · ${METHOD_L[r.method] || 'USDT'}`),
           el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.amount_cup ? ' · ' + Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '') + (r.note ? ' · ' + r.note : '')),
           r.status === 'pending' && r.verify === 'wait' ? el('div', { class: 'mut' }, '⏳ ' + (r.verify_msg || 'Confirmando en BSC…')) : null,
           r.status === 'pending' && r.verify !== 'wait' ? el('div', { class: 'mut' }, 'En revisión por el administrador') : null,
           r.admin_note ? el('div', { class: 'mut' }, r.admin_note) : null),
-        el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : usdt(r.approved ?? r.chain_amount ?? r.amount)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')),
+        el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? (r.amount_cup ? Math.round(r.amount_cup).toLocaleString('es') + ' CUP' : '—') : (r.status === 'approved' ? '' : '≈ ') + usdt(r.approved ?? r.chain_amount ?? r.amount)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')),
       card('Movimientos de saldo', led.length ? el('div', { class: 'list' }, ...led.map(l => el('div', {},
         el('div', { class: 'l' }, el('div', {}, { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' }[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
         el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + usdt(l.amount))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
   }
   if (rtab === 'cuenta') {
-    out.append(card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')));
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')));
   }
-  if ((orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) && rtab !== 'saldo') || (rtab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) timer = setTimeout(() => resellerView().catch(() => {}), 10000);
+  // Refresco automático mientras haya algo en curso, pero sin borrar lo que el revendedor está escribiendo
+  if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) || reqs.some(r => r.status === 'pending')) {
+    const tick = () => { if (userBusy()) timer = setTimeout(tick, 10000); else resellerView().catch(() => { timer = setTimeout(tick, 20000); }); };
+    timer = setTimeout(tick, rtab === 'saldo' ? 15000 : 10000);
+  }
 }
 
 /* =================== ADMIN =================== */
@@ -354,15 +421,15 @@ async function adminView() {
   const pend = users.filter(u => u.pending).length;
   const tabs = [['resumen', 'Resumen'], ['saldo', 'Saldo' + (preq ? ` (${preq})` : '')], ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')],
     ['reportes', 'Ganancias'], ['revendedores', 'Revendedores' + (pend ? ` (${pend})` : '')], ['catalogo', 'Catálogo']];
-  out.append(el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
-  if (st.balance_low) out.append(el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'Tu saldo en Central One está bajo o no alcanzó para un pedido. Recarga para no rechazar pedidos.'));
+  put(out, el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
+  if (st.balance_low) put(out, el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'Tu saldo en Central One está bajo o no alcanzó para un pedido. Recarga para no rechazar pedidos.'));
 
   if (tab === 'resumen') {
     const today = new Date().toISOString().slice(0, 10);
     const done = orders.filter(o => o.status === 'completed' && o.created_at.startsWith(today));
     const pb = st.provider_balance;
     const th = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: String(st.low_balance_threshold || ''), placeholder: 'Ej. 20' });
-    out.append(
+    put(out, 
       el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Saldo en Central One' + (pb && !pb.live ? ' (último dato)' : '')),
         el('div', { class: 'bal' }, pb ? usd(pb.available) : '—'),
         el('div', { class: 'mut' }, pb && pb.held !== null ? `Retenido en pedidos en curso: ${usd(pb.held)}` : (st.balance_error ? 'No se pudo leer el saldo en vivo' : ''))),
@@ -405,14 +472,19 @@ async function adminView() {
     const [dep, wallets] = await Promise.all([api('GET', '/api/deposit-info'), api('GET', '/api/admin/wallets')]);
     const showImg = async (r, holder, b) => {
       b.disabled = true;
-      try { const d = await api('GET', '/api/admin/topup-image?id=' + r.id); holder.replaceChildren(d.image ? el('img', { src: d.image, class: 'proof', alt: 'Comprobante' }) : el('div', { class: 'mut' }, 'Sin imagen')); }
-      catch (e) { alert(e.message); b.disabled = false; }
+      try {
+        const d = await api('GET', '/api/admin/topup-image?id=' + r.id);
+        if (!d.image) return holder.replaceChildren(el('div', { class: 'mut' }, 'Sin imagen'));
+        const img = el('img', { src: d.image, class: 'proof', alt: 'Comprobante', 'data-saved': '1' });
+        img.onclick = () => { const v = el('div', { class: 'zoom', onclick: () => v.remove() }, el('img', { src: d.image, alt: 'Comprobante' })); document.body.append(v); };
+        holder.replaceChildren(img, el('div', { class: 'mut' }, 'Toca la foto para verla en grande.')); b.remove();
+      } catch (e) { alert(e.message); b.disabled = false; }
     };
     const VER = { wait: ['⏳', 'warn'], verified: ['✓ Verificado en BSC', 'ok'], bad: ['✗ No cuadra', 'err'], manual: ['Manual', 'warn'], ok: ['✓ Automático', 'ok'] };
     // Payment info textareas
     const ptTA = el('textarea', { rows: '3', placeholder: 'Ej.: Banco X · Cuenta 1234 · Nombre Y', style: 'width:100%' }); ptTA.value = dep.payment_transfer || '';
     const pmTA = el('textarea', { rows: '3', placeholder: 'Ej.: +53 5XXXXXXX · Transfermóvil', style: 'width:100%' }); pmTA.value = dep.payment_mobile || '';
-    out.append(
+    put(out, 
       card('USDT BEP20', dep.wallet
         ? el('div', {}, el('div', { class: 'mut' }, 'Billetera que ven tus revendedores:'), el('div', { class: 'addr' }, dep.wallet),
           el('div', { class: 'mut', style: 'margin-top:6px' }, dep.auto ? `Verificación automática activa (${dep.min_confirmations} confirmaciones).` : 'Verificación automática desactivada: falta BSC_RPC_URL en Render.'))
@@ -440,7 +512,9 @@ async function adminView() {
           r.has_image ? vb : null, holder,
           r.status === 'pending' ? el('div', { class: 'acts' },
             act('Aprobar', async () => {
-              const a = prompt(`Monto a abonar a ${r.username} (USDT):`, show == null ? '' : Number(show).toFixed(2)); if (a === null) throw new Error('Cancelado');
+              const cupTxt = r.amount_cup ? `\nDijo que envió ${Math.round(r.amount_cup).toLocaleString('es')} CUP por ${METHOD_L[r.method].toLowerCase()}.\nCompruébalo en tu ${r.method === 'mobile' ? 'teléfono' : 'banco'} antes de aprobar.` : '';
+              const a = prompt(`Monto a abonar a ${r.username} (USDT):${cupTxt}`, show == null ? '' : Number(show).toFixed(2)); if (a === null) throw new Error('Cancelado');
+              if (!(Number(a.replace(',', '.')) > 0)) throw new Error('Escribe el monto en USDT a abonar.');
               const trust = !!(r.chain_from && !r.wallet_owner) && confirm(`¿Confiar en la billetera ${r.chain_from.slice(0, 8)}… para ${r.username}?\n\nSus próximos pagos desde ella se aprobarán solos.\nPulsa Cancelar si es de un exchange (Binance, etc.), porque esas billeteras las comparten muchas personas.`);
               await api('POST', '/api/admin/topup-decide', { id: r.id, approve: true, amount: a.replace(',', '.'), trust_wallet: trust });
             }, ''),
@@ -458,7 +532,7 @@ async function adminView() {
 
   if (tab === 'reportes' && rep) {
     const max = Math.max(0.01, ...rep.daily.map(d => d.profit));
-    out.append(
+    put(out, 
       el('div', { class: 'tabs' }, ...[['day', 'Hoy'], ['week', 'Esta semana'], ['month', 'Este mes']].map(([k, l]) =>
         el('button', { class: k === period ? 'on' : '', onclick: () => { period = k; adminView(); } }, l))),
       card('Ganancias', el('div', { class: 'mut' }, 'Desde ' + rep.from + ' UTC · solo recargas completadas'),
@@ -482,7 +556,7 @@ async function adminView() {
     const q = el('input', { placeholder: 'Buscar juego o paquete…', value: catQuery });
     q.addEventListener('keydown', e => { if (e.key === 'Enter') { catQuery = q.value; adminView(); } });
     const fams = groupBy(cat, c => c.family);
-    out.append(card('Catálogo de Central One',
+    put(out, card('Catálogo de Central One',
       el('div', { class: 'row' }, q, el('button', { class: 'sec', onclick: () => { catQuery = q.value; adminView(); } }, 'Buscar'),
         el('button', { class: 'sec', onclick: async () => { try { const r = await api('POST', '/api/admin/catalog-sync', {}); msg(note, `Catálogo actualizado: ${r.count} productos.`, 'ok'); setTimeout(adminView, 800); } catch (e) { msg(note, e.message, 'err'); } } }, 'Actualizar')),
       el('div', { class: 'mut' }, `${cat.length} productos en ${fams.size} juegos. "Por ID" se puede vender; "Código" (gift card/PIN) todavía no.`), note,
@@ -510,7 +584,7 @@ async function adminView() {
       })),
       cat.length ? null : el('div', { class: 'mut' }, 'No hay productos. Pulsa "Actualizar" o revisa que tu llave tenga el permiso catalog:read.')));
     const mine = groupBy(prods.filter(p => p.active), p => p.family + ' · ' + regLabel(p.variant));
-    out.append(card('Lo que ven tus revendedores', mine.size ? el('div', {}, ...[...mine].map(([f, ps]) => el('div', {}, el('h3', {}, f),
+    put(out, card('Lo que ven tus revendedores', mine.size ? el('div', {}, ...[...mine].map(([f, ps]) => el('div', {}, el('h3', {}, f),
       el('div', { class: 'list' }, ...ps.map(p => el('div', {},
         el('div', { class: 'l' }, el('div', {}, p.name), el('div', { class: 'mut' }, p.cost === null ? 'fuera del catálogo' : 'Costo US$ ' + p.cost + (p.in_stock ? '' : ' · agotado'))),
         el('div', { class: 'r' }, act('Renombrar', async () => { const a = prompt('Nombre que verán tus revendedores:', p.name); if (a) await api('POST', '/api/admin/product-update', { id: p.id, name: a }); }))))))))
@@ -524,7 +598,7 @@ async function adminView() {
       try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.') }); adminView(); }
       catch (e) { msg(note, e.message, 'err'); }
     };
-    out.append(card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, nu.m, create),
+    put(out, card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, nu.m, create),
       el('div', { class: 'mut' }, 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.'), note),
     users.some(u => u.pending) ? card('Pendientes de aprobación', el('div', { class: 'list' }, ...users.filter(u => u.pending).map(r => el('div', {},
       el('div', { class: 'l' }, el('div', {}, r.username), el('div', { class: 'mut' }, 'Se registró ' + r.created_at)),
@@ -542,7 +616,7 @@ async function adminView() {
   }
 
   if (tab === 'pedidos') {
-    out.append(card('Pedidos', el('div', { class: 'mut' }, 'Los "Verificando" necesitan tu revisión: compruébalos en el portal de Central One con la referencia.'),
+    put(out, card('Pedidos', el('div', { class: 'mut' }, 'Los "Verificando" necesitan tu revisión: compruébalos en el portal de Central One con la referencia.'),
       orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', { style: 'display:block' },
         el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
           el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
@@ -553,6 +627,11 @@ async function adminView() {
           act('Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), ''),
           act('No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null))) : el('div', { class: 'mut' }, 'Sin pedidos todavía.')));
   }
-  if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab) || (tab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) timer = setTimeout(() => adminView().catch(() => {}), 10000);
+  if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab) || (tab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) {
+    // el admin tiene campos ya rellenos: solo se pausa si está escribiendo, mirando una foto o con una ventana abierta
+    const busy = () => { const a = document.activeElement; return (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || Date.now() - lastTyping < 60000 || !!document.querySelector('.zoom, img.proof'); };
+    const tick = () => { if (busy()) timer = setTimeout(tick, 10000); else adminView().catch(() => { timer = setTimeout(tick, 20000); }); };
+    timer = setTimeout(tick, 10000);
+  }
 }
 boot();
