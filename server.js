@@ -92,6 +92,65 @@ async function getSettings() {
   return out;
 }
 
+
+// ---------- permisos del sub-administrador y registro de actividad ----------
+// El sub-admin solo entra a lo que el dueño le active. Nunca ve costos, ganancias, catálogo, ajustes, respaldo ni billeteras.
+const STAFF_PERM = {
+  'GET /api/admin/users': 'revendedores', 'POST /api/admin/users': 'revendedores', 'POST /api/admin/user-update': 'revendedores', 'POST /api/admin/user-delete': 'revendedores',
+  'GET /api/admin/orders': 'pedidos', 'POST /api/admin/resolve': 'pedidos', 'POST /api/admin/retry': 'pedidos',
+  'GET /api/admin/topup-requests': 'saldo', 'GET /api/admin/topup-image': 'saldo', 'POST /api/admin/topup-recheck': 'saldo', 'POST /api/admin/topup-decide': 'saldo',
+};
+function normPerms(p = {}) {
+  const n = (v, d, max) => { const x = Number(v); return Number.isFinite(x) && x >= 0 ? Math.min(x, max) : d; };
+  return { revendedores: !!p.revendedores, saldo: !!p.saldo, pedidos: !!p.pedidos, max_usdt: n(p.max_usdt, 50, 100000), max_cup: n(p.max_cup, 20000, 10000000) };
+}
+const AUDIT_LABEL = {
+  '/api/login': 'Inicio de sesión', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
+  '/api/orders': 'Recarga enviada', '/api/topup-requests': 'Solicitud de saldo enviada', '/api/validate': 'ID verificado',
+  '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/user-delete': 'Cuenta borrada',
+  '/api/admin/user-update': 'Cuenta modificada', '/api/admin/family': 'Juego/región activado o quitado', '/api/admin/products': 'Paquete activado',
+  '/api/admin/product-update': 'Paquete modificado', '/api/admin/resolve': 'Pedido resuelto a mano', '/api/admin/retry': 'Pedido reintentado',
+  '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/wallet-remove': 'Billetera de confianza quitada',
+  '/api/admin/settings': 'Ajustes cambiados', '/api/admin/catalog-sync': 'Catálogo actualizado', '/api/admin/webhook-test': 'Aviso de prueba enviado',
+  '/api/admin/staff': 'Sub-admin creado', '/api/admin/staff-update': 'Sub-admin modificado', '/api/admin/backup': 'Respaldo descargado', '/api/admin/audit.csv': 'Registro descargado (CSV)',
+};
+const AUDIT_SKIP = new Set(['/api/logout', '/api/validate', '/api/telegram-link', '/api/telegram-unlink']);
+const AUDIT_GET = new Set(['/api/admin/backup', '/api/admin/audit.csv']);
+const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username'];
+/** Nombre legible de sobre quién/qué se hizo la acción. Se calcula ANTES de ejecutarla (si borra la cuenta, luego ya no existe). */
+async function auditTarget(path, b) {
+  try {
+    if (b.user_id) { const t = await C.users.findOne({ _id: Number(b.user_id) }); return t ? t.username : '#' + b.user_id; }
+    if (path.endsWith('/topup-decide') || path.endsWith('/topup-recheck')) { const r = await C.topup_requests.findOne({ _id: Number(b.id) }); const t = r && await C.users.findOne({ _id: r.user_id }); return `Solicitud #${b.id}` + (t ? ' de ' + t.username : ''); }
+    if (b.order_id) { const o = await C.orders.findOne({ _id: Number(b.order_id) }); const t = o && await C.users.findOne({ _id: o.user_id }); return `Pedido #${b.order_id}` + (t ? ' de ' + t.username : ''); }
+  } catch {}
+  return null;
+}
+async function audit(req, user, path, body, status, target, res) {
+  try {
+    const b = body || {}, d = {};
+    if (path === '/api/admin/settings') { for (const [k, v] of Object.entries(b)) d[k] = String(v).slice(0, 80); }
+    else for (const k of AUDIT_KEYS) if (b[k] !== undefined && b[k] !== null && b[k] !== '') d[k] = String(b[k]).slice(0, 120);
+    if ((b.password || b.new_password) && path !== '/api/login' && path !== '/api/register') d.contraseña = '(definida)';
+    if (b.perms) d.permisos = JSON.stringify(b.perms).slice(0, 200);
+    if (b.tx_hash) d.hash = String(b.tx_hash).slice(0, 14) + '…';
+    const a = (res && res.audit) || {};
+    const loginName = path === '/api/login' || path === '/api/register' ? String(b.username || b.email || '').slice(0, 80) : '';
+    await C.audit.insertOne({ _id: await nextId('audit'), at: now(), actor: a.actor || (user && user.username) || loginName || '?', actor_id: user ? user.id : null,
+      role: a.role || (user && user.role) || 'visitante', action: path.replace(/^\/api\//, ''), label: AUDIT_LABEL[path] || (status === 403 ? 'Intento no permitido (' + path.replace(/^\/api\//, '') + ')' : path.replace(/^\/api\//, '')),
+      target: target || null, detail: d, ok: status < 400, status, ip: A.clientIp(req) });
+  } catch (e) { console.error('audit', e.message); }
+}
+const auditCat = r => r.action === 'login' ? 'login' : (r.role === 'admin' || r.role === 'subadmin') ? 'staff' : 'reseller';
+const auditOut = r => ({ id: r._id, at: fmt(r.at), actor: r.actor, role: r.role, label: r.label, action: r.action, target: r.target, detail: r.detail || {}, ok: r.ok, status: r.status, ip: r.ip, cat: auditCat(r) });
+async function auditRows(sp, max) {
+  const cat = sp.get('cat') || 'all', q = (sp.get('q') || '').trim().toLowerCase();
+  const rows = (await C.audit.find({}).sort({ _id: -1 }).limit(5000).toArray()).map(auditOut)
+    .filter(r => (cat === 'all' || r.cat === cat || (cat === 'fail' && !r.ok))
+      && (!q || [r.actor, r.label, r.target, r.ip, JSON.stringify(r.detail)].join(' ').toLowerCase().includes(q)));
+  return rows.slice(0, max);
+}
+
 // ---------- rutas API ----------
 const routes = {};
 const route = (m, p, role, fn) => (routes[m + ' ' + p] = { role, fn });
@@ -107,13 +166,15 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
   }
   if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
   A.loginOk(key);
+  res.audit = { actor: u.username, role: u.role };
+  C.users.updateOne({ _id: u._id }, { $set: { last_login: now(), last_ip: A.clientIp(req) } }).catch(() => {});
   send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id), 12 * 3600) });
 });
 route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) }));
 
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
-  send(res, 200, { username: u.username, role: u.role, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
+  send(res, 200, { username: u.username, role: u.role, perms: u.perms || null, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
     announcement: st.announcement });
@@ -399,13 +460,13 @@ route('GET', '/api/ledger', 'reseller', async (req, res, u) =>
     .map(l => ({ amount: l.amount_cents / 100, currency: curOf(l.currency), type: l.type, note: l.note, created_at: fmt(l.created_at) }))));
 
 // --- Admin ---
-route('GET', '/api/admin/users', 'admin', async (req, res) =>
+route('GET', '/api/admin/users', 'staff', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
     .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
 
-route('POST', '/api/admin/users', 'admin', async (req, res, _u, b) => {
+route('POST', '/api/admin/users', 'staff', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
-  const markup = Number(b.markup_pct ?? 0);
+  const markup = _u.role === 'subadmin' ? Number((await getSettings()).default_markup || 0) : Number(b.markup_pct ?? 0);
   if (!/^[\w.-]{3,30}$/.test(username)) return send(res, 400, { error: 'Usuario: 3-30 letras, números, . _ -' });
   if (pw.length < 8) return send(res, 400, { error: 'La contraseña debe tener 8+ caracteres' });
   if (!(markup >= 0 && markup <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
@@ -436,7 +497,7 @@ route('POST', '/api/admin/balance', 'admin', async (req, res, admin, b) => {
 });
 
 // Borrar una cuenta (solo si nunca compró ni tiene saldo: p. ej. registros falsos o rechazados)
-route('POST', '/api/admin/user-delete', 'admin', async (req, res, _u, b) => {
+route('POST', '/api/admin/user-delete', 'staff', async (req, res, _u, b) => {
   const id = Number(b.user_id), u = await C.users.findOne({ _id: id, role: 'reseller' });
   if (!u) return send(res, 404, { error: 'Usuario no encontrado' });
   if (u.balance_cents || u.bal_transfer_cents || u.bal_mobile_cents || await C.orders.countDocuments({ user_id: id }) || await C.ledger.countDocuments({ user_id: id }))
@@ -445,7 +506,8 @@ route('POST', '/api/admin/user-delete', 'admin', async (req, res, _u, b) => {
   send(res, 200, { ok: true });
 });
 
-route('POST', '/api/admin/user-update', 'admin', async (req, res, _u, b) => {
+route('POST', '/api/admin/user-update', 'staff', async (req, res, _u, b) => {
+  if (_u.role === 'subadmin' && (b.markup_pct !== undefined || b.min_margin !== undefined || b.password)) return send(res, 403, { error: 'Solo el dueño puede cambiar margen, ganancia mínima o contraseñas.' });
   const uid = Number(b.user_id), f = { _id: uid, role: 'reseller' };
   const set = {};
   if (b.active !== undefined) { set.active = b.active ? 1 : 0; if (b.active) set.pending_approval = 0; }
@@ -467,13 +529,13 @@ route('POST', '/api/admin/user-update', 'admin', async (req, res, _u, b) => {
   send(res, 200, { ok: true });
 });
 
-route('GET', '/api/admin/orders', 'admin', async (req, res) => {
+route('GET', '/api/admin/orders', 'staff', async (req, res, _u) => {
   const os = await C.orders.find({}).sort({ _id: -1 }).limit(200).toArray();
   const us = new Map((await C.users.find({ _id: { $in: [...new Set(os.map(o => o.user_id))] } }).toArray()).map(u => [u._id, u.username]));
   send(res, 200, os.map(o => {
     const price = (o.price_usdt_cents ?? o.price_cents) / 100; // equivalente USDT (para la ganancia)
     return { id: o._id, username: us.get(o.user_id), product_name: o.product_name, target: o.target, price, paid: o.price_cents / 100, currency: curOf(o.currency), status: o.status,
-      reference_code: o.reference_code, detail: o.detail, created_at: fmt(o.created_at), cost: e4ToStr(o.cost_e4), margin: (price - o.cost_e4 / 10000).toFixed(4) };
+      reference_code: o.reference_code, detail: o.detail, created_at: fmt(o.created_at), ...(_u.role === 'admin' ? { cost: e4ToStr(o.cost_e4), margin: (price - o.cost_e4 / 10000).toFixed(4) } : {}) };
   }));
 });
 
@@ -589,7 +651,7 @@ route('POST', '/api/admin/product-update', 'admin', async (req, res, _u, b) => {
 });
 
 // El admin resuelve pedidos "unknown" tras comprobarlos en el portal del proveedor
-route('POST', '/api/admin/resolve', 'admin', async (req, res, _u, b) => {
+route('POST', '/api/admin/resolve', 'staff', async (req, res, _u, b) => {
   const id = Number(b.order_id), outcome = b.outcome;
   if (!['completed', 'failed'].includes(outcome)) return send(res, 400, { error: 'Resultado inválido' });
   const o = await C.orders.findOne({ _id: id, status: 'unknown' });
@@ -603,7 +665,7 @@ route('POST', '/api/admin/resolve', 'admin', async (req, res, _u, b) => {
   send(res, 200, { ok: true });
 });
 
-route('POST', '/api/admin/retry', 'admin', async (req, res, _u, b) => {
+route('POST', '/api/admin/retry', 'staff', async (req, res, _u, b) => {
   const id = Number(b.order_id);
   const o = await C.orders.findOne({ _id: id, status: 'unknown' });
   if (!o) return send(res, 404, { error: 'Pedido no encontrado o ya resuelto' });
@@ -745,24 +807,24 @@ const trOut = (r, admin) => ({ id: r._id, method: r.method || 'usdt', currency: 
 route('GET', '/api/topup-requests', 'reseller', async (req, res, u) =>
   send(res, 200, (await C.topup_requests.find({ user_id: u.id }).sort({ _id: -1 }).limit(20).toArray()).map(r => trOut(r, false))));
 
-route('GET', '/api/admin/topup-requests', 'admin', async (req, res) => {
+route('GET', '/api/admin/topup-requests', 'staff', async (req, res) => {
   const rs = await C.topup_requests.find({}).sort({ _id: -1 }).limit(60).toArray();
   const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
   const ws = new Map((await C.wallets.find({}).toArray()).map(w => [w._id, w.user_id]));
   send(res, 200, rs.map(r => ({ ...trOut(r, true), username: us.get(r.user_id),
     wallet_owner: r.chain && ws.has(r.chain.from) ? us.get(ws.get(r.chain.from)) : null })));
 });
-route('GET', '/api/admin/topup-image', 'admin', async (req, res) => {
+route('GET', '/api/admin/topup-image', 'staff', async (req, res) => {
   const r = await C.topup_requests.findOne({ _id: Number(new URL(req.url, 'http://x').searchParams.get('id')) });
   send(res, 200, { image: r ? r.image : null });
 });
-route('POST', '/api/admin/topup-recheck', 'admin', async (req, res, _u, b) => {
+route('POST', '/api/admin/topup-recheck', 'staff', async (req, res, _u, b) => {
   const id = Number(b.id);
   await C.topup_requests.updateOne({ _id: id, status: 'pending', tx_hash: { $exists: true } }, { $set: { verify: 'wait' } });
   send(res, 200, { ok: true, result: BSC.enabled() ? await verifyDeposit(id) : 'manual' });
 });
-route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => {
-  const id = Number(b.id), approve = !!b.approve, trust = !!b.trust_wallet;
+route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => {
+  const id = Number(b.id), approve = !!b.approve, trust = !!b.trust_wallet && admin.role === 'admin';
   let trusted = false;
   try {
     const r = await withTx(async s => {
@@ -773,6 +835,10 @@ route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => 
       const cents = approve ? (b.amount !== undefined && b.amount !== '' ? toCents(b.amount) : def) : null;
       if (approve && !(cents > 0 && cents <= (cur === 'usdt' ? 10000000 : 1000000000))) throw httpErr(400, 'Monto inválido');
       if (approve && cur !== 'usdt' && cents % 100) throw httpErr(400, 'El monto en CUP debe ser entero');
+      if (approve && admin.role === 'subadmin') {
+        const lim = Number(cur === 'usdt' ? (admin.perms && admin.perms.max_usdt) ?? 50 : (admin.perms && admin.perms.max_cup) ?? 20000) * 100;
+        if (cents > lim) throw httpErr(403, `Supera tu límite de aprobación (${fmtCur(lim, cur)}). Pídele al dueño que lo apruebe.`);
+      }
       await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
       if (approve) {
         await addBalance(s, t.user_id, cents, cur);
@@ -786,6 +852,7 @@ route('POST', '/api/admin/topup-decide', 'admin', async (req, res, admin, b) => 
       if (!w) { try { await C.wallets.insertOne({ _id: r.from, user_id: r.user_id, created_at: now(), by: admin.username }); trusted = true; } catch (e) { if (!isDup(e)) throw e; } }
       else trusted = w.user_id === r.user_id;
     }
+    if (admin.role === 'subadmin') TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${approve ? 'aprobó' : 'rechazó'} la solicitud #${id}${approve ? ': ' + fmtCur(r.cents, r.cur) : ''}`).catch(() => {});
     TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${fmtCur(r.cents, r.cur)} (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
   send(res, 200, { ok: true, trusted });
@@ -842,6 +909,45 @@ route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
   }
   send(res, 200, { ok: true });
 });
+
+// --- Equipo (sub-administradores) y registro de actividad: solo el dueño ---
+route('GET', '/api/admin/staff', 'admin', async (req, res) =>
+  send(res, 200, (await C.users.find({ role: 'subadmin' }).sort({ _id: -1 }).toArray()).map(u => ({ id: u._id, username: u.username, active: !!u.active,
+    perms: normPerms(u.perms || {}), last_login: fmt(u.last_login), last_ip: u.last_ip || null, created_at: fmt(u.created_at) }))));
+route('POST', '/api/admin/staff', 'admin', async (req, res, _u, b) => {
+  const username = String(b.username || '').trim(), pw = String(b.password || '');
+  if (!/^[\w.-]{3,30}$/.test(username)) return send(res, 400, { error: 'Usuario: 3-30 letras, números, . _ -' });
+  if (pw.length < 10 || pw.length > 200) return send(res, 400, { error: 'La contraseña del sub-admin debe tener 10+ caracteres' });
+  try { const u = await createUser(username, A.hashPassword(pw), 'subadmin', 0); await C.users.updateOne({ username_lc: username.toLowerCase() }, { $set: { perms: normPerms(b.perms || { revendedores: 1, saldo: 1, pedidos: 1 }) } }); }
+  catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ese usuario ya existe' }); throw e; }
+  send(res, 201, { ok: true });
+});
+route('POST', '/api/admin/staff-update', 'admin', async (req, res, _u, b) => {
+  const f = { _id: Number(b.user_id), role: 'subadmin' }, set = {};
+  if (!(await C.users.findOne(f))) return send(res, 404, { error: 'Sub-admin no encontrado' });
+  if (b.active !== undefined) set.active = b.active ? 1 : 0;
+  if (b.perms) set.perms = normPerms(b.perms);
+  if (b.password) { if (String(b.password).length < 10) return send(res, 400, { error: 'Contraseña de 10+ caracteres' }); set.password_hash = A.hashPassword(String(b.password)); }
+  if (Object.keys(set).length) await C.users.updateOne(f, { $set: set });
+  send(res, 200, { ok: true });
+});
+route('GET', '/api/admin/audit', 'admin', async (req, res) => send(res, 200, await auditRows(new URL(req.url, 'http://x').searchParams, Math.min(Number(new URL(req.url, 'http://x').searchParams.get('limit')) || 200, 1000))));
+route('GET', '/api/admin/audit.csv', 'admin', async (req, res) => {
+  const rows = await auditRows(new URL(req.url, 'http://x').searchParams, 5000);
+  const cell = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
+  const csv = '\ufeffFecha (UTC),Quién,Rol,Acción,Sobre,Detalle,Resultado,IP\n' + rows.map(r => [r.at, r.actor, r.role, r.label, r.target, Object.entries(r.detail).map(([k, v]) => k + '=' + v).join(' · '), r.ok ? 'OK' : 'FALLÓ/NEGADO', r.ip].map(cell).join(',')).join('\n');
+  res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="registro-panel-${new Date().toISOString().slice(0, 10)}.csv"`, 'Cache-Control': 'no-store' });
+  res.end(csv);
+});
+// Cambiar la contraseña propia (revendedor, sub-admin o dueño)
+route('POST', '/api/change-password', 'any', async (req, res, u, b) => {
+  const d = await C.users.findOne({ _id: u.id }), pw = String(b.password || '');
+  if (!d || !A.verifyPassword(String(b.current || ''), d.password_hash)) return send(res, 403, { error: 'La contraseña actual no es correcta' });
+  if (pw.length < 8 || pw.length > 200) return send(res, 400, { error: 'La nueva contraseña debe tener 8 o más caracteres' });
+  await C.users.updateOne({ _id: u.id }, { $set: { password_hash: A.hashPassword(pw) } });
+  send(res, 200, { ok: true });
+});
+
 route('GET', '/api/admin/backup', 'admin', async (req, res) => {
   const out = { exported_at: new Date().toISOString(), version: 1 };
   for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests', 'wallets', 'counters', 'kv']) out[n] = await C[n].find({}).toArray();
@@ -982,12 +1088,20 @@ const server = http.createServer(async (req, res) => {
         body = await readBody(req, url.pathname === '/api/topup-requests' ? 2500000 : 20000); // la foto del comprobante va en la solicitud de saldo
       }
       let user = null;
+      const ap = url.pathname, doAudit = (req.method === 'POST' && !AUDIT_SKIP.has(ap)) || AUDIT_GET.has(ap);
       if (r.role) {
         user = await A.readSession(req);
         if (!user) return send(res, 401, { error: 'Sesión expirada' });
-        if (r.role !== 'any' && user.role !== r.role) return send(res, 403, { error: 'No permitido' });
+        let ok = true;
+        if (r.role === 'staff') ok = user.role === 'admin' || (user.role === 'subadmin' && !!(user.perms && user.perms[STAFF_PERM[req.method + ' ' + ap]]));
+        else if (r.role !== 'any') ok = user.role === r.role;
+        if (!ok) { if (doAudit || user.role === 'subadmin') await audit(req, user, ap, body, 403, null, res); return send(res, 403, { error: 'No permitido' }); }
       }
-      return await r.fn(req, res, user, body);
+      const target = doAudit && ap.startsWith('/api/admin/') ? await auditTarget(ap, body) : null;
+      let failed = false;
+      try { return await r.fn(req, res, user, body); }
+      catch (e) { failed = true; throw e; }
+      finally { if (doAudit) await audit(req, user, ap, body, failed ? 500 : res.statusCode, target, res); }
     }
     // estáticos
     let f = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -1011,6 +1125,8 @@ const server = http.createServer(async (req, res) => {
   setTimeout(recoverPending, 5000);
   if (MODE === 'real') provider.ping().then(() => console.log('Llave de Central One: OK'), e => console.error('ATENCIÓN: la llave de Central One no funciona:', e.message));
   setTimeout(syncSafe, 500);
+  const purgeAudit = () => { if (C.audit.deleteMany) C.audit.deleteMany({ at: { $lt: new Date(Date.now() - 180 * 864e5) } }).catch(() => {}); };
+  setInterval(purgeAudit, 24 * 3600e3); setTimeout(purgeAudit, 30000);
   TG.start();
   if (BSC.enabled()) console.log('Depósitos USDT BEP20 automáticos: activos'); else if (process.env.USDT_WALLET && !BSC.walletOk()) console.error('USDT_WALLET no es una dirección BEP20 válida (0x + 40 caracteres)');
   setInterval(() => recheckDeposits().catch(e => console.error('depósitos', e.message)), 30000);

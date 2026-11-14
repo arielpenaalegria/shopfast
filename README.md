@@ -72,3 +72,15 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
   Las cuentas nuevas con aprobación aparecen en *Revendedores → Pendientes*.
 - **Tasas CUP**: Resumen → tasa transferencia y tasa saldo móvil (CUP por 1 USDT). Solo visual; se cobra en USDT.
 - **Aviso para revendedores**: mensaje que ven arriba en su panel.
+
+## Sub-administradores y registro de actividad
+- **Equipo** (solo el dueño): crea sub-administradores con contraseña de 10+ caracteres y elige qué pueden hacer:
+  *Aprobar saldo* (con tope por aprobación en USDT y en CUP), *Pedidos* (sin costos ni ganancias) y *Revendedores*
+  (crear cuentas, aprobar registros, activar/desactivar). Puedes cambiar permisos, clave o desactivarlos cuando quieras.
+- **Nunca pueden**: ver costos/ganancias/reportes, tocar catálogo, precios o ajustes, ajustar saldos a mano, cambiar márgenes
+  o claves de revendedores, confiar en billeteras, descargar respaldos, ver el registro ni crear otros sub-admins.
+  Esto lo exige el servidor (no solo la pantalla): si lo intentan, responde 403 y queda anotado como "Negado".
+- Si un sub-admin aprueba o rechaza un saldo, el dueño recibe aviso por Telegram (si está activado).
+- **Registro** (solo el dueño): quién hizo qué, sobre quién, cuándo y desde qué IP (accesos y accesos fallidos, saldos, pedidos,
+  cambios de cuentas, ajustes, respaldos). Filtros, buscador y descarga CSV. Se conserva 180 días. Nunca guarda contraseñas ni fotos.
+- Todos los usuarios pueden cambiar su propia contraseña desde su cuenta.
