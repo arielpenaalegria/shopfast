@@ -53,6 +53,71 @@ details.regd>summary{display:flex;align-items:center;gap:12px;padding:10px 0;cur
 .recents{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .login{max-width:380px;margin:30px auto;text-align:center}.login img{width:150px;height:150px;border-radius:24px;margin:0 auto 10px;display:block}
 .login input{width:100%;margin-bottom:10px}.login button{width:100%}
+/* ===== Mejora de diseño ===== */
+:root{--pri3:#ffb066;--shadow:0 8px 24px -12px #000c,0 1px 0 #ffffff08 inset;--ease:cubic-bezier(.2,.7,.2,1)}
+html{scroll-behavior:smooth}
+body{background:radial-gradient(900px 420px at 85% -120px,#ff7a0024,transparent 70%),radial-gradient(700px 360px at -10% 0,#ff4d0014,transparent 70%),var(--bg);background-attachment:fixed;-webkit-font-smoothing:antialiased}
+header{background:#000000cc;backdrop-filter:saturate(1.4) blur(12px);-webkit-backdrop-filter:saturate(1.4) blur(12px);padding:10px 16px}
+.brand img{box-shadow:0 0 0 1px #ff7a0066,0 6px 18px -6px #ff7a00aa}
+main{padding:18px 14px 56px}
+.card{background:linear-gradient(180deg,#1a1a1f,var(--card));box-shadow:var(--shadow);border-radius:18px;padding:18px}
+h2{font-size:1.1rem;letter-spacing:.2px}
+h3{text-transform:uppercase;font-size:.72rem;letter-spacing:.9px;color:#8b8b95;margin:18px 0 9px}
+input,select,textarea{transition:border-color .15s,box-shadow .15s,background .15s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px #ff7a0033;background:#23232a}
+button{transition:transform .12s var(--ease),filter .15s,box-shadow .15s,background .15s,border-color .15s;min-height:42px}
+button:not(:disabled):hover{filter:brightness(1.1)}button:not(:disabled):active{transform:scale(.97)}
+button:not(.sec):not(.red):not(.ghost):not(.chip):not(.pkg):not(.reg):not(.seg button):not(.clr){box-shadow:0 8px 18px -10px #ff5a00}
+button.sm{min-height:34px}button.ghost{min-height:0}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--pri3);outline-offset:2px}
+button.big{width:100%;font-size:1.05rem;padding:14px}
+.row>button{flex:0 0 auto}
+.tabs{scrollbar-width:none;gap:8px;padding:2px 2px 6px;margin-bottom:14px}.tabs::-webkit-scrollbar{display:none}
+.tabs button{border-radius:999px;padding:9px 16px;background:#16161a;color:#c9c9d1;font-weight:600;min-height:40px}
+.tabs button.on{background:linear-gradient(135deg,var(--pri),var(--pri2));color:#fff;border-color:transparent;box-shadow:0 8px 20px -10px #ff5a00}
+.chip{transition:all .15s;min-height:40px}.chip:hover{border-color:#ff7a0088}
+.chip.on{background:linear-gradient(135deg,var(--pri),var(--pri2));border-color:transparent;box-shadow:0 6px 16px -8px #ff5a00}
+.hero{position:relative;overflow:hidden;background:linear-gradient(135deg,#ff8a1f,#c2410c 70%,#9a3412);box-shadow:0 18px 40px -22px #ff5a00}
+.hero::after{content:"";position:absolute;right:-60px;top:-60px;width:220px;height:220px;border-radius:50%;background:radial-gradient(circle,#ffffff2e,transparent 65%);pointer-events:none}
+.hero>*{position:relative;z-index:1}
+.bals>div{background:#00000033;border:1px solid #ffffff14;backdrop-filter:blur(4px)}
+.bal{font-size:2.3rem}
+/* Selector de tipo de pago (precios independientes) */
+.seg{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.seg button{display:grid;grid-template-columns:auto 1fr;grid-template-areas:"i l" "i s";align-items:center;column-gap:10px;text-align:left;background:var(--card2);color:var(--ink);border:2px solid var(--line);border-radius:14px;padding:11px 13px;font-weight:600;min-height:58px}
+.seg .si{grid-area:i;font-size:1.5rem;line-height:1}.seg .sl{grid-area:l;font-size:.92rem}.seg small{grid-area:s;font-size:.78rem;font-weight:500;color:var(--mut)}
+.seg button:hover{border-color:#ff7a0088}
+.seg button.on{border-color:var(--pri);background:linear-gradient(135deg,#2e1b0c,#1e1e24);box-shadow:0 0 0 3px #ff7a0022,0 10px 22px -14px #ff7a00}
+.seg button.on small{color:var(--pri3)}
+.paysum{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#000;border:1px dashed #ff7a0066;border-radius:12px;padding:11px 14px;margin-bottom:10px}
+.paysum span{color:var(--mut);font-size:.9rem}.paysum b{font-size:1.1rem;color:var(--pri3)}.paysum.low b{color:#fca5a5}
+/* Paquetes */
+.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.pkg{display:flex;flex-direction:column;justify-content:space-between;gap:6px;min-height:88px;border-radius:14px;padding:13px;font-weight:600;transition:transform .15s var(--ease),border-color .15s,box-shadow .15s}
+.pkg:hover{transform:translateY(-2px);border-color:#ff7a0088}
+.pkg b{font-size:1.15rem;margin:0;color:var(--pri3)}
+.pkg.on{border-color:var(--pri);background:linear-gradient(135deg,#33200e,#1e1e24);box-shadow:0 0 0 3px #ff7a0022,0 12px 24px -14px #ff7a00}
+/* Buscador con lupa */
+.search{position:relative;margin-bottom:14px}
+.search input{width:100%;padding:13px 44px 13px 44px;border-radius:14px;background:#101014;font-size:1rem}
+.search input::-webkit-search-cancel-button{display:none}
+.search .lupa{position:absolute;left:15px;top:50%;transform:translateY(-50%);font-size:1.05rem;opacity:.75;pointer-events:none}
+.search .clr{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;padding:0;color:var(--mut);border-radius:50%}
+.search input:placeholder-shown~.clr{display:none}
+/* Listas y detalles */
+.list>div{transition:background .15s;border-radius:8px}
+.tag{letter-spacing:.2px}
+details.fam,details.regd{background:#ffffff04}
+details.fam>summary{padding:14px}
+.reg{transition:transform .15s var(--ease),border-color .15s}.reg:hover{transform:translateX(3px);border-color:#ff7a0088}
+.code{box-shadow:0 0 0 1px #ff7a0022 inset}
+.stat{border:1px solid var(--line);background:linear-gradient(180deg,#22222a,var(--card2))}
+.msg{border:1px solid #ffffff10;border-radius:12px}
+.login{margin-top:48px;padding:26px 22px}.login img{box-shadow:0 18px 40px -18px #ff7a00}
+.card,.msg{animation:rise .25s var(--ease) both}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (max-width:480px){main{padding:14px 10px 48px}.card{padding:15px;border-radius:16px}.bal{font-size:2rem}.grid{grid-template-columns:repeat(2,1fr)}.seg{grid-template-columns:repeat(3,1fr);gap:6px}.seg button{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;padding:10px 4px;min-height:84px}.seg .si{font-size:1.3rem}.seg .sl{font-size:.72rem;line-height:1.15}.seg small{font-size:.68rem}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b>Shop Fast<small>Panel de revendedores</small></b></div><span id="who"></span></header>
 <main>

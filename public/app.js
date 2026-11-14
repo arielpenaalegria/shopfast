@@ -37,6 +37,8 @@ const CUR_LONG = { usdt: 'USDT', transfer: 'CUP Transferencia', mobile: 'CUP Sal
 const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
 /** Monto con su moneda: USDT con 2 decimales, CUP en enteros. */
 const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
+const priceIn = (p, c) => p.prices ? (p.prices[c] != null ? p.prices[c] : (c === 'usdt' ? p.price : null)) : (c === 'usdt' ? p.price : null);
+let userQuery = '';
 let payCur = 'usdt'; try { payCur = localStorage.getItem('payCur') || 'usdt'; } catch {}
 const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
 
@@ -205,6 +207,16 @@ async function resellerView() {
   const renderBuy = () => {
     buy.replaceChildren();
     if (!products.length) return put(buy, el('div', { class: 'mut' }, 'Aún no hay productos disponibles. Pídele al administrador que active juegos.'));
+    // Tipo de pago: cada uno es independiente (solo se ven los precios de ese saldo)
+    const curOk = CURS.filter(c => products.some(p => priceIn(p, c) != null));
+    if (!curOk.includes(payCur)) payCur = curOk[0] || 'usdt';
+    const vis = products.filter(p => priceIn(p, payCur) != null);
+    const fams = groupBy(vis, p => p.family);
+    if (!fams.has(pick.family)) { pick.family = fams.keys().next().value || null; pick.variant = null; pick.product = null; }
+    put(buy, el('h3', { style: 'margin-top:0' }, 'Pagar con'),
+      el('div', { class: 'seg' }, ...curOk.map(c => el('button', { type: 'button', class: c === payCur ? 'on' : '',
+        onclick: () => { payCur = c; try { localStorage.setItem('payCur', c); } catch {} pick.product = null; renderBuy(); } },
+        el('span', { class: 'si' }, CUR_ICON[c]), el('span', { class: 'sl' }, CUR_LONG[c]), el('small', {}, money(bal[c], c))))));
     put(buy, el('h3', {}, '1. Elige el juego'),
       el('div', { class: 'chips' }, ...[...fams.keys()].map(f => el('button', { class: 'chip' + (f === pick.family ? ' on' : ''), onclick: () => { pick.family = f; pick.variant = null; pick.product = null; renderBuy(); } }, f))));
     const vars = groupBy(fams.get(pick.family) || [], p => p.variant);
@@ -219,13 +231,12 @@ async function resellerView() {
     if (vars.size > 1) put(buy, el('div', { class: 'row', style: 'margin-top:10px;align-items:center' },
       el('span', { class: 'code' }, pick.variant), el('b', {}, regName(pick.variant) || pick.variant),
       el('button', { class: 'ghost', onclick: () => { pick.variant = null; pick.product = null; renderBuy(); } }, '← Cambiar región')));
-    const list = (vars.get(pick.variant) || []).slice().sort((a, b) => a.price - b.price);
+    const list = (vars.get(pick.variant) || []).slice().sort((a, b) => priceIn(a, payCur) - priceIn(b, payCur));
     if (!list.some(p => p.id === pick.product)) pick.product = null;
     const n = vars.size > 1 ? 3 : 2;
     put(buy, el('h3', {}, n + '. Elige el paquete'),
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
-        shortName(p.name), el('b', {}, usdt(p.price)),
-        ...['transfer', 'mobile'].filter(c => p.prices && p.prices[c] != null).map(c => el('span', { class: 'mut', style: 'display:block;font-size:.78rem' }, money(p.prices[c], c)))))));
+        shortName(p.name), el('b', {}, money(priceIn(p, payCur), payCur))))));
     const p = list.find(x => x.id === pick.product);
     if (!p) return;
     const inputs = {};
@@ -257,20 +268,16 @@ async function resellerView() {
       } catch (e) { msg(vbox, e.message, 'err'); }
       setTimeout(() => { vbtn.disabled = false; }, 2000);
     };
-    // ¿Con qué saldo paga? Solo monedas con precio disponible; por defecto la última usada (o la primera que alcance)
-    const avail = CURS.filter(c => p.prices ? p.prices[c] != null : c === 'usdt');
-    if (!avail.includes(payCur)) payCur = avail.find(c => bal[c] >= p.prices[c]) || avail[0];
-    const priceOf = c => p.prices ? p.prices[c] : p.price;
-    const btn = el('button', {});
+    // El saldo con el que paga es el tipo de pago elegido arriba (independiente de los demás)
+    const priceOf = c => priceIn(p, c);
+    const btn = el('button', { class: 'big' });
     const payBox = el('div');
     const renderPay = () => {
-      btn.textContent = `Enviar · ${money(priceOf(payCur), payCur)}`;
-      payBox.replaceChildren(); put(payBox, el('div', { class: 'chips', style: 'margin-bottom:6px' }, ...avail.map(c => {
-        const enough = bal[c] >= priceOf(c);
-        return el('button', { type: 'button', class: 'chip paych' + (c === payCur ? ' on' : '') + (enough ? '' : ' low'),
-          onclick: () => { payCur = c; try { localStorage.setItem('payCur', c); } catch {} renderPay(); } },
-          el('span', {}, CUR_ICON[c] + ' ' + money(priceOf(c), c)), el('small', {}, 'Tienes ' + money(bal[c], c)));
-      })), bal[payCur] < priceOf(payCur) ? el('div', { class: 'msg err', style: 'margin:0 0 8px' }, `No te alcanza el saldo ${CUR_LONG[payCur]}. Elige otro o pide saldo.`) : null);
+      const pr = priceOf(payCur), enough = bal[payCur] >= pr;
+      btn.textContent = `Enviar · ${money(pr, payCur)}`;
+      payBox.replaceChildren(); put(payBox, el('div', { class: 'paysum' + (enough ? '' : ' low') },
+        el('span', {}, CUR_ICON[payCur] + ' Tu saldo disponible'), el('b', {}, money(bal[payCur], payCur))),
+        enough ? null : el('div', { class: 'msg err', style: 'margin:8px 0 0' }, `No te alcanza el saldo ${CUR_LONG[payCur]}. Cambia el tipo de pago arriba o pide saldo.`));
     };
     renderPay();
     btn.onclick = async () => {
@@ -292,7 +299,7 @@ async function resellerView() {
     put(buy, step3,
       recent.length ? el('div', { class: 'recents' }, el('span', { class: 'mut', style: 'align-self:center' }, 'Recientes:'),
         ...recent.map(t => el('button', { class: 'chip', onclick: () => fillWith(t) }, Object.values(t).join(' · ')))) : null,
-      el('div', { class: 'row' }, ...fields), el('h3', {}, 'Pagar con'), payBox, el('div', { class: 'row' }, vbtn, btn), vbox);
+      el('div', { class: 'row' }, ...fields), payBox, el('div', { class: 'row' }, vbtn, btn), vbox);
     if (scrollTo3) { scrollTo3 = false; setTimeout(() => { step3.scrollIntoView({ behavior: 'smooth', block: 'start' }); if (!recent.length && fields[0]) fields[0].focus(); }, 50); }
   };
 
@@ -616,13 +623,17 @@ async function adminView() {
       try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.') }); adminView(); }
       catch (e) { msg(note, e.message, 'err'); }
     };
-    put(out, card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, nu.m, create),
-      el('div', { class: 'mut' }, 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.'), note),
-    users.some(u => u.pending) ? card('Pendientes de aprobación', el('div', { class: 'list' }, ...users.filter(u => u.pending).map(r => el('div', {},
+    const usersBox = el('div');
+    const matchU = r => !userQuery.trim() || String(r.username).toLowerCase().includes(userQuery.trim().toLowerCase());
+    const renderUsers = () => {
+      const pU = users.filter(u => u.pending && matchU(u)), aU = users.filter(u => !u.pending && matchU(u));
+      usersBox.replaceChildren();
+      put(usersBox,
+    pU.length ? card('Pendientes de aprobación', el('div', { class: 'list' }, ...pU.map(r => el('div', {},
       el('div', { class: 'l' }, el('div', {}, r.username), el('div', { class: 'mut' }, 'Se registró ' + r.created_at)),
       el('div', { class: 'r' }, act('Aprobar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: true }), ''), ' ',
         act('Borrar', async () => { if (!confirm('¿Borrar la cuenta ' + r.username + '?')) throw new Error('Cancelado'); await api('POST', '/api/admin/user-delete', { user_id: r.id }); }, 'red')))))) : null,
-    card('Revendedores', users.some(u => !u.pending) ? el('div', { class: 'list' }, ...users.filter(u => !u.pending).map(r => el('div', { style: 'display:block' },
+    card('Revendedores' + (userQuery.trim() ? ` · ${aU.length} de ${users.filter(u => !u.pending).length}` : ''), aU.length ? el('div', { class: 'list' }, ...aU.map(r => el('div', { style: 'display:block' },
       el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
         el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`)),
         el('div', { style: 'text-align:right;font-weight:800;line-height:1.35' }, ...CURS.map(c => el('div', { style: c === 'usdt' ? 'font-size:1.1rem' : 'font-size:.9rem' }, money((r.balances || { usdt: r.balance })[c] || 0, c))))),
@@ -633,7 +644,16 @@ async function adminView() {
         }, c === 'usdt' ? '' : 'sec')),
         act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
         act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
-        act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, 'Aún no tienes revendedores.')));
+        act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, userQuery.trim() ? 'Ningún revendedor coincide con "' + userQuery.trim() + '".' : 'Aún no tienes revendedores.')));
+    };
+    const sq = el('input', { type: 'search', placeholder: 'Buscar por correo o usuario…', value: userQuery, autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
+    sq.addEventListener('input', () => { userQuery = sq.value; renderUsers(); });
+    const searchBar = el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq,
+      el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { sq.value = ''; userQuery = ''; renderUsers(); sq.focus(); } }, '✕'));
+    put(out, card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, nu.m, create),
+      el('div', { class: 'mut' }, 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.'), note),
+      searchBar, usersBox);
+    renderUsers();
   }
 
   if (tab === 'pedidos') {
