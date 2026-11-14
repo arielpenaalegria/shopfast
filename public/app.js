@@ -38,7 +38,7 @@ const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
 /** Monto con su moneda: USDT con 2 decimales, CUP en enteros. */
 const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
 const priceIn = (p, c) => p.prices ? (p.prices[c] != null ? p.prices[c] : (c === 'usdt' ? p.price : null)) : (c === 'usdt' ? p.price : null);
-let userQuery = '';
+let userQuery = '', ME = null, auditCat = 'all', auditQ = '';
 let payCur = 'usdt'; try { payCur = localStorage.getItem('payCur') || 'usdt'; } catch {}
 const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
 
@@ -171,10 +171,11 @@ api('GET', '/api/public-config').then(cfg => {
 async function boot() {
   try {
     const me = await api('GET', '/api/me');
-    $('who').replaceChildren(el('span', {}, me.username + ' · '),
+    ME = me;
+    $('who').replaceChildren(el('span', {}, me.username + (me.role === 'subadmin' ? ' (sub-admin)' : '') + ' · '),
       el('a', { href: '#', onclick: async e => { e.preventDefault(); await api('POST', '/api/logout', {}); show('login'); } }, 'Salir'));
     show('app');
-    me.role === 'admin' ? adminView() : resellerView();
+    me.role === 'admin' || me.role === 'subadmin' ? adminView() : resellerView();
   } catch { show('login'); }
 }
 
@@ -186,6 +187,22 @@ function userBusy() {
   if (a && $('app').contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
   if (Date.now() - lastTyping < 60000) return true;
   return [...$('app').querySelectorAll('input:not([type=file]),textarea')].some(i => i.value.trim()) || !!$('app').querySelector('img.proof:not([data-saved])') || !!document.querySelector('.zoom');
+}
+
+/** Tarjeta para cambiar la contraseña propia (revendedor, sub-admin o dueño). */
+function passwordCard() {
+  const cur = el('input', { type: 'password', placeholder: 'Contraseña actual', autocomplete: 'current-password' });
+  const n1 = el('input', { type: 'password', placeholder: 'Nueva contraseña (8+)', autocomplete: 'new-password' });
+  const n2 = el('input', { type: 'password', placeholder: 'Repite la nueva', autocomplete: 'new-password' });
+  const box = el('div'), b = el('button', { class: 'sm' }, 'Cambiar contraseña');
+  b.onclick = async () => {
+    if (n1.value !== n2.value) return msg(box, 'Las contraseñas nuevas no coinciden.', 'err');
+    b.disabled = true;
+    try { await api('POST', '/api/change-password', { current: cur.value, password: n1.value }); cur.value = n1.value = n2.value = ''; msg(box, 'Contraseña cambiada.', 'ok'); }
+    catch (e) { msg(box, e.message, 'err'); }
+    b.disabled = false;
+  };
+  return card('Cambiar mi contraseña', el('div', { class: 'row' }, cur), el('div', { class: 'row' }, n1, n2), el('div', { class: 'acts' }, b), box);
 }
 
 /* =================== REVENDEDOR =================== */
@@ -418,7 +435,7 @@ async function resellerView() {
         el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + money(l.amount, l.currency))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
   }
   if (rtab === 'cuenta') {
-    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')));
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), passwordCard());
   }
   // Refresco automático mientras haya algo en curso, pero sin borrar lo que el revendedor está escribiendo
   if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) || reqs.some(r => r.status === 'pending')) {
@@ -432,8 +449,9 @@ let tab = 'resumen', catQuery = '', period = 'day';
 async function adminView() {
   clearTimeout(timer);
   const out = $('app');
-  const [users, orders, prods, st, reqs] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/admin/orders'), api('GET', '/api/admin/products'),
-    api('GET', '/api/admin/status'), api('GET', '/api/admin/topup-requests')]);
+  const OWN = ME.role === 'admin', can = k => OWN || !!(ME.perms && ME.perms[k]), none = v => Promise.resolve(v);
+  const [users, orders, prods, st, reqs] = await Promise.all([can('revendedores') ? api('GET', '/api/admin/users') : none([]), can('pedidos') ? api('GET', '/api/admin/orders') : none([]),
+    OWN ? api('GET', '/api/admin/products') : none([]), OWN ? api('GET', '/api/admin/status') : none({ settings: {} }), can('saldo') ? api('GET', '/api/admin/topup-requests') : none([])]);
   const cat = tab === 'catalogo' ? await api('GET', '/api/admin/catalog?q=' + encodeURIComponent(catQuery)) : [];
   const rep = tab === 'reportes' ? await api('GET', '/api/admin/report?period=' + period) : null;
   out.replaceChildren();
@@ -441,8 +459,10 @@ async function adminView() {
   const act = (label, fn, cls = 'sec') => el('button', { class: cls + ' sm', onclick: async () => { try { await fn(); await adminView(); } catch (e) { if (e.message !== 'Cancelado') alert(e.message); } } }, label);
   const pending = orders.filter(o => o.status === 'unknown').length, preq = reqs.filter(r => r.status === 'pending').length;
   const pend = users.filter(u => u.pending).length;
-  const tabs = [['resumen', 'Resumen'], ['saldo', 'Saldo' + (preq ? ` (${preq})` : '')], ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')],
-    ['reportes', 'Ganancias'], ['revendedores', 'Revendedores' + (pend ? ` (${pend})` : '')], ['catalogo', 'Catálogo']];
+  const tSaldo = ['saldo', 'Saldo' + (preq ? ` (${preq})` : '')], tPed = ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')], tRev = ['revendedores', 'Revendedores' + (pend ? ` (${pend})` : '')];
+  const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tPed, ['reportes', 'Ganancias'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro']]
+    : [can('saldo') && tSaldo, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
+  if (!tabs.some(t => t[0] === tab)) { tab = tabs[0][0]; if (tab === 'cuenta' && can('saldo')) tab = 'saldo'; }
   put(out, el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
   if (st.balance_low) put(out, el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'Tu saldo en Central One está bajo o no alcanzó para un pedido. Recarga para no rechazar pedidos.'));
 
@@ -491,7 +511,7 @@ async function adminView() {
   }
 
   if (tab === 'saldo') {
-    const [dep, wallets] = await Promise.all([api('GET', '/api/deposit-info'), api('GET', '/api/admin/wallets')]);
+    const [dep, wallets] = await Promise.all([api('GET', '/api/deposit-info'), OWN ? api('GET', '/api/admin/wallets') : none([])]);
     const showImg = async (r, holder, b) => {
       b.disabled = true;
       try {
@@ -507,15 +527,15 @@ async function adminView() {
     const ptTA = el('textarea', { rows: '3', placeholder: 'Ej.: Banco X · Cuenta 1234 · Nombre Y', style: 'width:100%' }); ptTA.value = dep.payment_transfer || '';
     const pmTA = el('textarea', { rows: '3', placeholder: 'Ej.: +53 5XXXXXXX · Transfermóvil', style: 'width:100%' }); pmTA.value = dep.payment_mobile || '';
     put(out, 
-      card('USDT BEP20', dep.wallet
+      OWN && card('USDT BEP20', dep.wallet
         ? el('div', {}, el('div', { class: 'mut' }, 'Billetera que ven tus revendedores:'), el('div', { class: 'addr' }, dep.wallet),
           el('div', { class: 'mut', style: 'margin-top:6px' }, dep.auto ? `Verificación automática activa (${dep.min_confirmations} confirmaciones).` : 'Verificación automática desactivada: falta BSC_RPC_URL en Render.'))
         : el('div', { class: 'mut' }, 'Sin configurar. En Render agrega USDT_WALLET (tu dirección BEP20) y BSC_RPC_URL (tu URL de NodeReal).')),
-      card('Datos de Transferencia bancaria', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por transferencia. Deja vacío para ocultar ese método.'), ptTA,
+      OWN && card('Datos de Transferencia bancaria', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por transferencia. Deja vacío para ocultar ese método.'), ptTA,
         el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_transfer: ptTA.value }), ''))),
-      card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
+      OWN && card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
         el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
-      card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.'),
+      card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.' + (OWN ? '' : ` Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`)),
       reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => {
         const holder = el('div'), vb = el('button', { class: 'ghost' }, 'Ver comprobante');
         vb.onclick = () => showImg(r, holder, vb);
@@ -540,7 +560,7 @@ async function adminView() {
               const n = Number(a.replace(',', '.'));
               if (!(n > 0)) throw new Error('Escribe el monto a abonar.');
               if (cup && !Number.isInteger(n)) throw new Error('El monto en CUP debe ser entero.');
-              const trust = !!(r.chain_from && !r.wallet_owner) && confirm(`¿Confiar en la billetera ${r.chain_from.slice(0, 8)}… para ${r.username}?\n\nSus próximos pagos desde ella se aprobarán solos.\nPulsa Cancelar si es de un exchange (Binance, etc.), porque esas billeteras las comparten muchas personas.`);
+              const trust = OWN && !!(r.chain_from && !r.wallet_owner) && confirm(`¿Confiar en la billetera ${r.chain_from.slice(0, 8)}… para ${r.username}?\n\nSus próximos pagos desde ella se aprobarán solos.\nPulsa Cancelar si es de un exchange (Binance, etc.), porque esas billeteras las comparten muchas personas.`);
               await api('POST', '/api/admin/topup-decide', { id: r.id, approve: true, amount: a.replace(',', '.'), trust_wallet: trust });
             }, ''),
             r.tx_hash && dep.auto ? act('Verificar otra vez', () => api('POST', '/api/admin/topup-recheck', { id: r.id })) : null,
@@ -549,7 +569,7 @@ async function adminView() {
               await api('POST', '/api/admin/topup-decide', { id: r.id, approve: false, note: m });
             }, 'red')) : null);
       })) : el('div', { class: 'mut' }, 'No hay solicitudes.')),
-      card('Billeteras de confianza', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Los pagos desde estas billeteras se abonan solos a su revendedor. No pongas aquí billeteras de exchanges.'),
+      OWN && card('Billeteras de confianza', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Los pagos desde estas billeteras se abonan solos a su revendedor. No pongas aquí billeteras de exchanges.'),
         wallets.length ? el('div', { class: 'list' }, ...wallets.map(w => el('div', {},
           el('div', { class: 'l' }, el('div', {}, w.username || '?'), el('div', { class: 'mut addr-s' }, w.address)),
           el('div', { class: 'r' }, act('Quitar', () => api('POST', '/api/admin/wallet-remove', { address: w.address }), 'red'))))) : el('div', { class: 'mut' }, 'Ninguna todavía. Se agregan al aprobar un pago y marcar "confiar".')));
@@ -635,23 +655,23 @@ async function adminView() {
         act('Borrar', async () => { if (!confirm('¿Borrar la cuenta ' + r.username + '?')) throw new Error('Cancelado'); await api('POST', '/api/admin/user-delete', { user_id: r.id }); }, 'red')))))) : null,
     card('Revendedores' + (userQuery.trim() ? ` · ${aU.length} de ${users.filter(u => !u.pending).length}` : ''), aU.length ? el('div', { class: 'list' }, ...aU.map(r => el('div', { style: 'display:block' },
       el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-        el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`)),
+        el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), OWN ? el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`) : null),
         el('div', { style: 'text-align:right;font-weight:800;line-height:1.35' }, ...CURS.map(c => el('div', { style: c === 'usdt' ? 'font-size:1.1rem' : 'font-size:.9rem' }, money((r.balances || { usdt: r.balance })[c] || 0, c))))),
       el('div', { class: 'acts' },
-        ...CURS.map(c => act('± ' + CUR_S[c], async () => {
+        ...(OWN ? CURS : []).map(c => act('± ' + CUR_S[c], async () => {
           const a = prompt(`Saldo ${CUR_LONG[c]} de ${r.username}\nMonto a abonar (negativo para restar):`); if (!a) throw new Error('Cancelado');
           await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.'), currency: c });
         }, c === 'usdt' ? '' : 'sec')),
-        act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
-        act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
+        OWN && act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
+        OWN && act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
         act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, userQuery.trim() ? 'Ningún revendedor coincide con "' + userQuery.trim() + '".' : 'Aún no tienes revendedores.')));
     };
     const sq = el('input', { type: 'search', placeholder: 'Buscar por correo o usuario…', value: userQuery, autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
     sq.addEventListener('input', () => { userQuery = sq.value; renderUsers(); });
     const searchBar = el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq,
       el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { sq.value = ''; userQuery = ''; renderUsers(); sq.focus(); } }, '✕'));
-    put(out, card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, nu.m, create),
-      el('div', { class: 'mut' }, 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.'), note),
+    put(out, card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, OWN ? nu.m : null, create),
+      el('div', { class: 'mut' }, OWN ? 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.' : 'La cuenta se crea con el margen por defecto del dueño.'), note),
       searchBar, usersBox);
     renderUsers();
   }
@@ -661,13 +681,91 @@ async function adminView() {
       orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', { style: 'display:block' },
         el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
           el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
-          el('div', { class: 'r' }, el('div', {}, money(o.paid ?? o.price, o.currency)), el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2) + ' USDT'), tag(o.status))),
+          el('div', { class: 'r' }, el('div', {}, money(o.paid ?? o.price, o.currency)), OWN ? el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2) + ' USDT') : null, tag(o.status))),
         o.detail ? el('div', { class: 'mut', style: 'margin-top:4px' }, o.detail) : null,
         o.status === 'unknown' ? el('div', { class: 'acts' },
           act('Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
           act('Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), ''),
           act('No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null))) : el('div', { class: 'mut' }, 'Sin pedidos todavía.')));
   }
+
+  /* ---------- Equipo: sub-administradores ---------- */
+  if (tab === 'equipo') {
+    const staff = await api('GET', '/api/admin/staff');
+    const PL = [['saldo', 'Aprobar saldo', 'Ve y aprueba o rechaza solicitudes de saldo, con tope por aprobación.'], ['pedidos', 'Pedidos', 'Ve los pedidos (sin costos ni ganancias) y resuelve los \"Verificando\".'],
+      ['revendedores', 'Revendedores', 'Crea cuentas, aprueba registros y activa o desactiva (sin tocar saldos, márgenes ni claves).']];
+    const permEditor = p => {
+      const boxes = {};
+      const mk = ([k, t, h]) => { const i = el('input', { type: 'checkbox' }); i.checked = !!p[k]; boxes[k] = i; return el('label', { class: 'chk' }, i, el('span', {}, el('b', {}, t), el('small', { class: 'mut', style: 'display:block' }, h))); };
+      const mu = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_usdt) }), mc = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_cup) });
+      const node = el('div', {}, ...PL.map(mk), el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por aprobación: lo que pase de aquí solo lo aprueba el dueño.'),
+        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Máx. USDT', mu), el('label', { class: 'fld' }, 'Máx. CUP', mc)));
+      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, max_usdt: mu.value, max_cup: mc.value }) };
+    };
+    const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off' }), p: el('input', { type: 'password', placeholder: 'Contraseña (10+)', autocomplete: 'new-password' }) };
+    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, max_usdt: 50, max_cup: 20000 });
+    const nb = el('button', {}, 'Crear sub-administrador'), nm = el('div');
+    nb.onclick = async () => { try { await api('POST', '/api/admin/staff', { username: nu.u.value, password: nu.p.value, perms: ed.get() }); adminView(); } catch (e) { msg(nm, e.message, 'err'); } };
+    put(out,
+      card('Nuevo sub-administrador', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Un ayudante con acceso limitado. Todo lo que haga queda en la pestaña Registro.'),
+        el('div', { class: 'row' }, nu.u, nu.p), ed.node, el('div', { class: 'acts' }, nb), nm),
+      card('Tu equipo', staff.length ? el('div', { class: 'list' }, ...staff.map(m => {
+        const pe = permEditor(m.perms);
+        return el('div', { style: 'display:block' },
+          el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
+            el('div', { class: 'mut' }, 'Último acceso: ' + (m.last_login ? m.last_login + ' UTC' + (m.last_ip ? ' · ' + m.last_ip : '') : 'nunca')),
+            el('div', { class: 'chips', style: 'margin-top:6px;gap:6px' }, ...PL.filter(([k]) => m.perms[k]).map(([, t]) => el('span', { class: 'tag code' }, t)),
+              m.perms.saldo ? el('span', { class: 'tag code' }, `Tope ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP`) : null)),
+          el('details', { class: 'regd' }, el('summary', {}, el('b', {}, 'Editar permisos'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')), pe.node,
+            el('div', { class: 'acts', style: 'margin-bottom:10px' }, act('Guardar permisos', () => api('POST', '/api/admin/staff-update', { user_id: m.id, perms: pe.get() }), ''))),
+          el('div', { class: 'acts' },
+            act('Clave', async () => { const a = prompt('Nueva contraseña para ' + m.username + ' (10+):'); if (a) await api('POST', '/api/admin/staff-update', { user_id: m.id, password: a }); }),
+            act(m.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/staff-update', { user_id: m.id, active: !m.active }), m.active ? 'red' : 'sec')));
+      })) : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.')),
+      card('Qué NO puede hacer nunca un sub-administrador', el('div', { class: 'mut' }, 'Ver costos, ganancias o reportes · tocar el catálogo, los precios o los ajustes · ajustar saldos a mano · cambiar márgenes o contraseñas de revendedores · confiar en billeteras · descargar respaldos · ver el registro o crear otros sub-admins. Si intenta algo que no puede, queda anotado como \"Negado\".')),
+      passwordCard());
+  }
+
+  /* ---------- Registro de actividad ---------- */
+  if (tab === 'registro') {
+    const rows = await api('GET', '/api/admin/audit?cat=' + auditCat + '&limit=500');
+    const ROLE_L = { admin: 'Dueño', subadmin: 'Sub-admin', reseller: 'Revendedor', visitante: 'Visitante' };
+    const KEY_L = { amount: 'monto', currency: 'moneda', markup_pct: 'margen %', min_margin: 'ganancia mín.', active: 'activo', approve: 'aprobar', trust_wallet: 'confiar billetera', note: 'nota', outcome: 'resultado',
+      family: 'juego', variant: 'región', method: 'método', amount_cup: 'CUP', product_id: 'producto', username: 'usuario', hash: 'hash' };
+    const listBox = el('div');
+    const renderAudit = () => {
+      const q = auditQ.trim().toLowerCase();
+      const f = rows.filter(r => !q || [r.actor, r.label, r.target, r.ip, JSON.stringify(r.detail)].join(' ').toLowerCase().includes(q));
+      listBox.replaceChildren(f.length ? el('div', { class: 'list' }, ...f.map(r => el('div', { style: 'display:block' },
+        el('div', { style: 'display:flex;justify-content:space-between;gap:10px' },
+          el('div', { class: 'l' }, el('div', {}, r.actor + ' ', el('span', { class: 'tag role-' + r.role }, ROLE_L[r.role] || r.role)),
+            el('div', { style: 'font-weight:500' }, r.label + (r.target ? ' · ' + r.target : '')),
+            Object.keys(r.detail).length ? el('div', { class: 'mut' }, Object.entries(r.detail).map(([k, v]) => (KEY_L[k] || k) + ': ' + v).join(' · ')) : null),
+          el('div', { class: 'r' }, el('div', { class: 'mut' }, r.at), el('div', { class: 'mut' }, r.ip || ''), r.ok ? null : el('span', { class: 'tag off' }, r.status === 403 ? 'Negado' : 'Falló'))))))
+        : el('div', { class: 'mut' }, 'Sin registros con ese filtro.'));
+    };
+    const sq = el('input', { type: 'search', placeholder: 'Buscar persona, acción, IP…', value: auditQ, autocomplete: 'off', 'aria-label': 'Buscar en el registro' });
+    sq.addEventListener('input', () => { auditQ = sq.value; renderAudit(); });
+    put(out, card('Registro de actividad',
+      el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Quién hizo qué y cuándo: accesos, saldos, pedidos, cambios de cuentas y ajustes. Se guarda 180 días. Muestra los últimos 500 movimientos.'),
+      el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...[['all', 'Todo'], ['staff', 'Equipo'], ['reseller', 'Revendedores'], ['login', 'Accesos'], ['fail', 'Fallidos / negados']].map(([k, l]) =>
+        el('button', { class: 'chip' + (auditCat === k ? ' on' : ''), onclick: () => { auditCat = k; adminView(); } }, l))),
+      el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq, el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { sq.value = ''; auditQ = ''; renderAudit(); sq.focus(); } }, '✕')),
+      el('div', { class: 'acts', style: 'margin:0 0 6px' }, el('button', { class: 'sec sm', onclick: () => adminView() }, '↻ Actualizar'),
+        el('a', { href: '/api/admin/audit.csv?cat=' + auditCat, download: '' }, el('button', { class: 'sec sm' }, '⬇ Descargar CSV'))),
+      listBox));
+    renderAudit();
+  }
+
+  /* ---------- Mi cuenta (sub-admin) ---------- */
+  if (tab === 'cuenta' && !OWN) {
+    const PN = { saldo: 'aprobar saldo', pedidos: 'ver pedidos', revendedores: 'gestionar revendedores' };
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, ME.username), ' · Sub-administrador'),
+      el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes: ' + (Object.keys(PN).filter(k => can(k)).map(k => PN[k]).join(', ') || 'nada por ahora') + '.'),
+      can('saldo') ? el('div', { class: 'mut' }, `Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`) : null,
+      el('div', { class: 'mut' }, 'Todo lo que haces queda registrado.')), passwordCard());
+  }
+
   if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab) || (tab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) {
     // el admin tiene campos ya rellenos: solo se pausa si está escribiendo, mirando una foto o con una ventana abierta
     const busy = () => { const a = document.activeElement; return (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || Date.now() - lastTyping < 60000 || !!document.querySelector('.zoom, img.proof'); };
