@@ -87,7 +87,12 @@ const SETTINGS = {
   announcement: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },
   require_2fa: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // exigir 2FA a sub-admins
   auto_backup: { def: 1, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // respaldo semanal a Telegram
+  maintenance: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // modo mantenimiento: pausa las recargas
+  maintenance_msg: { def: '', check: v => String(v).length <= 300, cast: v => String(v).trim() },
+  rate_stale_days: { def: 3, check: v => Number(v) >= 0 && Number(v) <= 60, cast: Number }, // avisar si las tasas CUP llevan N días sin tocarse (0 = no avisar)
+  pay_off_usdt: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, pay_off_transfer: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, pay_off_mobile: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // suspender pedidos de saldo por método
 };
+const maintMsg = st => st.maintenance_msg || 'Estamos en mantenimiento. Las recargas están en pausa, vuelve en un rato.';
 async function getSettings() {
   const out = {};
   for (const [k, d] of Object.entries(SETTINGS)) { const r = await kvGet('set_' + k); out[k] = r ? d.cast(r.value) : d.def; }
@@ -116,13 +121,14 @@ const AUDIT_LABEL = {
   '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/wallet-remove': 'Billetera de confianza quitada',
   '/api/admin/settings': 'Ajustes cambiados', '/api/admin/catalog-sync': 'Catálogo actualizado', '/api/admin/webhook-test': 'Aviso de prueba enviado',
   '/api/2fa/start': 'Activación de 2FA iniciada', '/api/2fa/confirm': '2FA activada', '/api/2fa/disable': '2FA desactivada', '/api/logout-all': 'Sesiones cerradas en todos los dispositivos',
-  '/api/admin/backup-send': 'Respaldo enviado a Telegram',
+  '/api/admin/backup-send': 'Respaldo enviado a Telegram', '/api/admin/restore': 'Respaldo restaurado', '/api/admin/rates-confirm': 'Tasas CUP confirmadas como vigentes',
+  '/api/forgot': 'Pidió recuperar su contraseña', '/api/reset-password': 'Contraseña restablecida con código',
   '/api/admin/staff': 'Sub-admin creado', '/api/admin/staff-update': 'Sub-admin modificado', '/api/admin/backup': 'Respaldo descargado', '/api/admin/audit.csv': 'Registro descargado (CSV)',
 };
 const AUDIT_SKIP = new Set(['/api/logout', '/api/validate', '/api/telegram-link', '/api/telegram-unlink']);
 const AUDIT_GET = new Set(['/api/admin/backup', '/api/admin/audit.csv']);
-const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'reset_2fa', 'revoke'];
-const PWD_PATHS = new Set(['/api/change-password', '/api/admin/users', '/api/admin/user-update', '/api/admin/staff', '/api/admin/staff-update']);
+const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'reset_2fa', 'revoke', 'mode', 'maintenance', 'dry_run'];
+const PWD_PATHS = new Set(['/api/change-password', '/api/admin/users', '/api/admin/user-update', '/api/admin/staff', '/api/admin/staff-update', '/api/reset-password']);
 const GATE_OK = new Set(['/api/me', '/api/me-extra', '/api/2fa/start', '/api/2fa/confirm', '/api/logout', '/api/logout-all', '/api/change-password']);
 function dateRange(from, to) {
   const ok = x => /^\d{4}-\d{2}-\d{2}$/.test(x || ''), r = {};
@@ -148,7 +154,7 @@ async function audit(req, user, path, body, status, target, res) {
     if (b.perms) d.permisos = JSON.stringify(b.perms).slice(0, 200);
     if (b.tx_hash) d.hash = String(b.tx_hash).slice(0, 14) + '…';
     const a = (res && res.audit) || {};
-    const loginName = path === '/api/login' || path === '/api/register' ? String(b.username || b.email || '').slice(0, 80) : '';
+    const loginName = ['/api/login', '/api/register', '/api/forgot', '/api/reset-password'].includes(path) ? String(b.username || b.email || '').slice(0, 80) : '';
     await C.audit.insertOne({ _id: await nextId('audit'), at: now(), actor: a.actor || (user && user.username) || loginName || '?', actor_id: user ? user.id : null,
       role: a.role || (user && user.role) || 'visitante', action: path.replace(/^\/api\//, ''), label: a.label || AUDIT_LABEL[path] || (status === 403 ? 'Intento no permitido (' + path.replace(/^\/api\//, '') + ')' : path.replace(/^\/api\//, '')),
       target: target || null, detail: d, ok: status < 400, status, ip: A.clientIp(req) });
@@ -165,6 +171,18 @@ async function auditRows(sp, max) {
   return rows.slice(0, max);
 }
 
+
+/** Aviso al dueño cuando alguien falla varias veces al entrar a una cuenta de dueño o sub-admin. */
+function alertLoginFail(u, req, n) {
+  if (!(u.role === 'admin' || u.role === 'subadmin') || !(n === 3 || n === 5)) return;
+  TG.notifyAdmins(`🚨 ${n} intentos fallidos al entrar a la cuenta ${u.username} (${u.role === 'admin' ? 'dueño' : 'sub-admin'}) desde ${A.clientIp(req)}.` + (n >= 5 ? '\nQuedó bloqueada 15 minutos para esa conexión.' : '')).catch(() => {});
+}
+const csvCell = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
+function sendCsv(res, name, header, rows) {
+  res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}-${new Date().toISOString().slice(0, 10)}.csv"`, 'Cache-Control': 'no-store' });
+  res.end('\ufeff' + header + '\n' + rows.map(r => r.map(csvCell).join(',')).join('\n'));
+}
+
 // ---------- rutas API ----------
 const routes = {};
 const route = (m, p, role, fn) => (routes[m + ' ' + p] = { role, fn });
@@ -175,7 +193,7 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
   if (A.loginBlocked(key)) return send(res, 429, { error: 'Demasiados intentos. Espera 15 minutos.' });
   const u = await C.users.findOne({ username_lc: username.toLowerCase() });
   if (!u || !A.verifyPassword(String(body.password || ''), u.password_hash)) {
-    A.loginFail(key);
+    { const n = A.loginFail(key); if (u) alertLoginFail(u, req, n); }
     return send(res, 401, { error: 'Usuario o contraseña incorrectos' });
   }
   if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
@@ -184,22 +202,63 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
     const code = String(body.code || '').trim();
     if (!code) { res.audit = { actor: u.username, role: u.role, label: 'Contraseña correcta · falta el código 2FA' }; return send(res, 200, { need_2fa: true }); }
     how = await secondFactor(u, code);
-    if (!how) { A.loginFail(key); res.audit = { actor: u.username, role: u.role, label: 'Código 2FA incorrecto' }; return send(res, 401, { error: 'Código incorrecto o vencido' }); }
+    if (!how) { alertLoginFail(u, req, A.loginFail(key)); res.audit = { actor: u.username, role: u.role, label: 'Código 2FA incorrecto' }; return send(res, 401, { error: 'Código incorrecto o vencido' }); }
   }
   A.loginOk(key); // solo se borra el contador de fallos cuando TODO salió bien (si no, se podrían adivinar códigos sin límite)
   res.audit = { actor: u.username, role: u.role, ...(how === 'recovery' ? { label: 'Inicio de sesión con código de recuperación' } : how ? { label: 'Inicio de sesión (con 2FA)' } : {}) };
   if (how === 'recovery') TG.notifyUser(u._id, `⚠️ Entraste al panel con un código de recuperación (te quedan ${Math.max(0, (u.totp_recovery || []).length - 1)}). Si no fuiste tú, cambia tu contraseña ya.`).catch(() => {});
+  if ((u.role === 'admin' || u.role === 'subadmin') && u.last_ip && u.last_ip !== A.clientIp(req)) TG.notifyAdmins(`🔐 ${u.username} (${u.role === 'admin' ? 'dueño' : 'sub-admin'}) entró desde una IP nueva: ${A.clientIp(req)} (la anterior era ${u.last_ip}). Si no fue él, desactívalo en Equipo.`).catch(() => {});
   C.users.updateOne({ _id: u._id }, { $set: { last_login: now(), last_ip: A.clientIp(req) } }).catch(() => {});
   send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id, u.sv || 0), 12 * 3600) });
 });
 route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) }));
+
+
+// Olvidé mi contraseña (solo revendedores): código de 6 dígitos por Telegram. Sin Telegram, se avisa al dueño para que la cambie.
+const forgotHits = new Map(), resetHits = new Map();
+const hitLimit = (map, ip, max) => { const t = Date.now(), h = (map.get(ip) || []).filter(x => t - x < 3600e3); if (h.length >= max) return true; h.push(t); map.set(ip, h); return false; };
+route('POST', '/api/forgot', null, async (req, res, _u, b) => {
+  if (hitLimit(forgotHits, A.clientIp(req), 5)) return send(res, 429, { error: 'Demasiadas solicitudes. Intenta en una hora.' });
+  const generic = { ok: true, message: 'Si la cuenta existe y tiene Telegram conectado, te enviamos un código. Si no, avisamos al administrador para que te cambie la contraseña.' };
+  const name = String(b.username || '').trim().toLowerCase();
+  const u = name ? await C.users.findOne({ username_lc: name }) : null;
+  if (!u || u.role !== 'reseller' || !u.active) return send(res, 200, generic);
+  const prev = await kvGet('pr_' + u._id); let pr = null; try { pr = prev && prev.value ? JSON.parse(prev.value) : null; } catch {}
+  if (pr && Date.now() - pr.at < 60000) return send(res, 200, generic); // 1 por minuto
+  if (u.telegram_chat_id && TG.enabled()) {
+    const code = String(crypto.randomInt(100000, 1000000));
+    await kvSet('pr_' + u._id, JSON.stringify({ h: A.hashRecovery(code), exp: Date.now() + 10 * 60e3, tries: 0, at: Date.now() }));
+    TG.notifyUser(u._id, `🔑 Tu código para cambiar la contraseña del panel: ${code}\nVence en 10 minutos. Si no lo pediste tú, ignora este mensaje.`).catch(() => {});
+  } else {
+    await kvSet('pr_' + u._id, JSON.stringify({ at: Date.now() }));
+    TG.notifyAdmins(`🔑 ${u.username} olvidó su contraseña y no tiene Telegram conectado. Cámbiasela en Revendedores → Clave.`).catch(() => {});
+  }
+  send(res, 200, generic);
+});
+route('POST', '/api/reset-password', null, async (req, res, _u, b) => {
+  if (hitLimit(resetHits, A.clientIp(req), 12)) return send(res, 429, { error: 'Demasiados intentos. Intenta en una hora.' });
+  const bad = () => send(res, 400, { error: 'Código incorrecto o vencido. Pide uno nuevo.' });
+  const u = await C.users.findOne({ username_lc: String(b.username || '').trim().toLowerCase() });
+  if (!u || u.role !== 'reseller' || !u.active) return bad();
+  const r = await kvGet('pr_' + u._id); let pr = null; try { pr = r && r.value ? JSON.parse(r.value) : null; } catch {}
+  if (!pr || !pr.h || Date.now() > pr.exp || pr.tries >= 5) return bad();
+  const a = Buffer.from(A.hashRecovery(String(b.code || ''))), c = Buffer.from(pr.h);
+  if (a.length !== c.length || !crypto.timingSafeEqual(a, c)) { pr.tries++; await kvSet('pr_' + u._id, JSON.stringify(pr)); return bad(); }
+  const pw = String(b.password || '');
+  if (pw.length < 8 || pw.length > 200) return send(res, 400, { error: 'La nueva contraseña debe tener 8 o más caracteres' });
+  await C.users.updateOne({ _id: u._id }, { $set: { password_hash: A.hashPassword(pw), needs_password: 0 }, $inc: { sv: 1 } });
+  await kvSet('pr_' + u._id, '');
+  res.audit = { actor: u.username, role: 'reseller' };
+  TG.notifyUser(u._id, '✅ La contraseña de tu cuenta se cambió. Si no fuiste tú, avisa al administrador ya.').catch(() => {});
+  send(res, 200, { ok: true });
+});
 
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
   send(res, 200, { username: u.username, role: u.role, perms: u.perms || null, totp: !!u.totp_on, must_2fa: u.role === 'subadmin' && !u.totp_on && !!st.require_2fa, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
-    announcement: st.announcement });
+    announcement: st.announcement, maintenance: st.maintenance ? { msg: maintMsg(st) } : null });
 });
 
 // Registro público de revendedores (correo + contraseña). Según el ajuste: cerrado, con aprobación del admin o abierto.
@@ -232,14 +291,14 @@ async function availableProducts(onlyId) {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   return ps.map(p => ({ p, c: cs.get(p.catalog_item_id) }))
     .filter(({ c }) => c && c.in_catalog === 1 && c.price_e4 != null && c.in_stock === 1 && c.requires_target === 1)
-    .map(({ p, c }) => ({ id: p._id, name: p.name, fixed_price_cents: p.fixed_price_cents || null, family: c.family_name || 'Otros', variant: variantOf(c), product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema }));
+    .map(({ p, c }) => ({ id: p._id, name: p.name, fixed_price_cents: p.fixed_price_cents || null, family: c.family_name || 'Otros', variant: variantOf(c), product_id: c._id, price_e4: c.price_e4, target_schema: c.target_schema, ptype: p.ptype || null }));
 }
 
 route('GET', '/api/products', 'reseller', async (req, res, u) => {
   const st = await getSettings();
   send(res, 200, (await availableProducts()).sort((a, b) => a.name.localeCompare(b.name)).map(p => {
     const usd = priceFor(p, u), t = priceIn(usd, 'transfer', st), m = priceIn(usd, 'mobile', st);
-    return { id: p.id, name: p.name, family: p.family, variant: p.variant, price: usd / 100,
+    return { id: p.id, name: p.name, family: p.family, variant: p.variant, ptype: p.ptype || null, price: usd / 100,
       prices: { usdt: usd / 100, transfer: t == null ? null : t / 100, mobile: m == null ? null : m / 100 }, fields: p.target_schema };
   }));
 });
@@ -268,6 +327,7 @@ function buildPayload(p, body) {
 // así que aquí se limita a 25/min en total y 1 cada 2 s por usuario. No cobra nada y no es obligatorio.
 const valHits = []; const valLast = new Map();
 route('POST', '/api/validate', 'reseller', async (req, res, u, body) => {
+  { const st0 = await getSettings(); if (st0.maintenance) return send(res, 503, { error: maintMsg(st0) }); }
   const p = (await availableProducts(Number(body.product_id)))[0];
   if (!p) return send(res, 400, { error: 'Producto no disponible ahora' });
   const b = buildPayload(p, body);
@@ -289,6 +349,7 @@ route('POST', '/api/validate', 'reseller', async (req, res, u, body) => {
 });
 
 route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
+  { const st0 = await getSettings(); if (st0.maintenance) return send(res, 503, { error: maintMsg(st0) }); }
   const p = (await availableProducts(Number(body.product_id)))[0];
   if (!p) return send(res, 400, { error: 'Producto no disponible ahora' });
   const b = buildPayload(p, body);
@@ -471,15 +532,34 @@ const REASONS = {
   insufficient_scope: 'Servicio no disponible por ahora. Contacta al administrador.',
   invalid_api_key: 'Servicio no disponible por ahora. Contacta al administrador.',
 };
-route('GET', '/api/orders', 'reseller', async (req, res, u) =>
-  send(res, 200, (await C.orders.find({ user_id: u.id }).sort({ _id: -1 }).limit(100).toArray()).map(o => ({
+const OSTAT = { unknown: ['unknown'], active: ['pending', 'processing'], completed: ['completed'], failed: ['failed'] };
+const OSTAT_ES = { completed: 'Completada', failed: 'Fallida', pending: 'En proceso', processing: 'En proceso', unknown: 'Verificando' };
+const LTYPE_ES = { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' };
+async function myOrders(u, sp, cap) {
+  const q = (sp.get('q') || '').trim().toLowerCase(), f = { user_id: u.id }, lim = Math.min(Number(sp.get('limit')) || 100, cap);
+  if (OSTAT[sp.get('status')]) f.status = { $in: OSTAT[sp.get('status')] };
+  const dr = dateRange(sp.get('from'), sp.get('to')); if (dr) f.created_at = dr;
+  let os = await C.orders.find(f).sort({ _id: -1 }).limit(q ? 3000 : lim).toArray();
+  if (q) os = os.filter(o => [o._id, '#' + o._id, o.product_name, o.target].map(x => x ?? '').join(' ').toLowerCase().includes(q)).slice(0, lim);
+  return os.map(o => ({
     id: o._id, product_id: o.product_id, target_payload: o.target_payload, product_name: o.product_name, target: o.target, price: o.price_cents / 100, currency: curOf(o.currency), status: o.status, created_at: fmt(o.created_at),
-    reason: o.status === 'failed' ? (REASONS[o.failure_code] || 'No se pudo entregar la recarga. Se devolvió tu saldo.') : null,
-  }))));
-
-route('GET', '/api/ledger', 'reseller', async (req, res, u) =>
-  send(res, 200, (await C.ledger.find({ user_id: u.id }).sort({ _id: -1 }).limit(100).toArray())
-    .map(l => ({ amount: l.amount_cents / 100, currency: curOf(l.currency), type: l.type, note: l.note, created_at: fmt(l.created_at) }))));
+    reason: o.status === 'failed' ? (REASONS[o.failure_code] || 'No se pudo entregar la recarga. Se devolvió tu saldo.') : null }));
+}
+async function myLedger(u, sp, cap) {
+  const q = (sp.get('q') || '').trim().toLowerCase(), f = { user_id: u.id }, lim = Math.min(Number(sp.get('limit')) || 100, cap), cur = ['usdt', 'transfer', 'mobile'].includes(sp.get('method')) ? sp.get('method') : '';
+  if (LTYPE_ES[sp.get('status')]) f.type = sp.get('status');
+  const dr = dateRange(sp.get('from'), sp.get('to')); if (dr) f.created_at = dr;
+  let ls = await C.ledger.find(f).sort({ _id: -1 }).limit(q || cur ? 3000 : lim).toArray();
+  if (cur) ls = ls.filter(l => curOf(l.currency) === cur);
+  if (q) ls = ls.filter(l => [LTYPE_ES[l.type], l.type, l.note].map(x => x ?? '').join(' ').toLowerCase().includes(q));
+  return ls.slice(0, lim).map(l => ({ amount: l.amount_cents / 100, currency: curOf(l.currency), type: l.type, note: l.note, created_at: fmt(l.created_at) }));
+}
+route('GET', '/api/orders', 'reseller', async (req, res, u) => send(res, 200, await myOrders(u, new URL(req.url, 'http://x').searchParams, 300)));
+route('GET', '/api/ledger', 'reseller', async (req, res, u) => send(res, 200, await myLedger(u, new URL(req.url, 'http://x').searchParams, 300)));
+route('GET', '/api/orders.csv', 'reseller', async (req, res, u) => sendCsv(res, 'mis-recargas', 'Fecha (UTC),Número,Producto,Destino,Monto,Moneda,Estado',
+  (await myOrders(u, new URL(req.url, 'http://x').searchParams, 5000)).map(o => [o.created_at, o.id, o.product_name, o.target, o.price, o.currency === 'usdt' ? 'USDT' : o.currency === 'transfer' ? 'CUP transferencia' : 'CUP saldo móvil', OSTAT_ES[o.status] || o.status])));
+route('GET', '/api/ledger.csv', 'reseller', async (req, res, u) => sendCsv(res, 'mis-movimientos', 'Fecha (UTC),Tipo,Monto,Moneda,Nota',
+  (await myLedger(u, new URL(req.url, 'http://x').searchParams, 5000)).map(l => [l.created_at, LTYPE_ES[l.type] || l.type, l.amount, l.currency === 'usdt' ? 'USDT' : l.currency === 'transfer' ? 'CUP transferencia' : 'CUP saldo móvil', l.note])));
 
 // --- Admin ---
 route('GET', '/api/admin/users', 'staff', async (req, res) =>
@@ -600,6 +680,7 @@ route('GET', '/api/admin/status', 'admin', async (req, res, _u) => {
     telegram: TG.enabled(), telegram_linked: !!(await C.users.findOne({ _id: _u.id })).telegram_chat_id,
     low_balance_threshold: Number(((await kvGet('low_balance_threshold')) || {}).value || 0),
     settings: await getSettings(),
+    rates_updated: ((await kvGet('rates_updated')) || {}).value || null, provider_down: ((await kvGet('provider_down')) || {}).value === '1', db_mode: process.env.MONGODB_URI ? 'mongodb' : 'memory',
     backup_last: ((await kvGet('backup_last')) || {}).value || null, backup_err: ((await kvGet('backup_last_err')) || {}).value || '',
   });
 });
@@ -657,7 +738,7 @@ route('GET', '/api/admin/products', 'admin', async (req, res) => {
   const cs = new Map((await C.catalog.find({ _id: { $in: ps.map(p => p.catalog_item_id) } }).toArray()).map(c => [c._id, c]));
   send(res, 200, ps.filter(p => cs.has(p.catalog_item_id)).map(p => {
     const c = cs.get(p.catalog_item_id);
-    return { id: p._id, name: p.name, fixed_price: p.fixed_price_cents ? p.fixed_price_cents / 100 : null, family: c.family_name || 'Otros', variant: variantOf(c), active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
+    return { id: p._id, ptype: p.ptype || null, name: p.name, fixed_price: p.fixed_price_cents ? p.fixed_price_cents / 100 : null, family: c.family_name || 'Otros', variant: variantOf(c), active: p.active, in_stock: c.in_stock, in_catalog: c.in_catalog, requires_target: c.requires_target,
       cost: c.price_e4 === null ? null : e4ToStr(c.price_e4) };
   }));
 });
@@ -680,6 +761,10 @@ route('POST', '/api/admin/product-update', 'admin', async (req, res, _u, b) => {
   if (b.fixed_price !== undefined) {
     if (b.fixed_price === null || b.fixed_price === '') set.fixed_price_cents = null;
     else { const c = toCents(b.fixed_price); if (!(c > 0 && c <= 10000000)) return send(res, 400, { error: 'Precio inválido' }); set.fixed_price_cents = c; }
+  }
+  if (b.ptype !== undefined) {
+    if (!['', 'diamantes', 'pases', 'membresias', 'otros'].includes(b.ptype)) return send(res, 400, { error: 'Tipo inválido' });
+    set.ptype = b.ptype || null;
   }
   if (b.name !== undefined) {
     const n = String(b.name).trim();
@@ -742,11 +827,13 @@ route('GET', '/api/deposit-info', 'any', async (req, res) => {
   const st = await getSettings();
   send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf,
     payment_transfer: st.payment_transfer, payment_mobile: st.payment_mobile,
-    rates: { transfer: st.rate_transfer, mobile: st.rate_mobile } });
+    rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
+    suspended: { usdt: !!st.pay_off_usdt, transfer: !!st.pay_off_transfer, mobile: !!st.pay_off_mobile } });
 });
 
 route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
   const method = ['usdt', 'transfer', 'mobile'].includes(b.method) ? b.method : 'usdt';
+  { const st0 = await getSettings(); if (st0['pay_off_' + method]) return send(res, 400, { error: 'Los pagos por ' + { usdt: 'USDT', transfer: 'transferencia', mobile: 'saldo móvil' }[method] + ' están suspendidos por ahora. Usa otro método o inténtalo más tarde.' }); }
   const hash = String(b.tx_hash || '').trim().toLowerCase();
   if (hash && !BSC.isHash(hash)) return send(res, 400, { error: 'El hash no es válido. Debe empezar por 0x y tener 66 caracteres.' });
   const cents = b.amount === undefined || b.amount === '' ? null : toCents(b.amount);
@@ -954,8 +1041,10 @@ route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
     if (!d.check(v)) return send(res, 400, { error: 'Valor inválido: ' + k });
     await kvSet('set_' + k, d.cast(v));
   }
+  if (b.rate_transfer !== undefined || b.rate_mobile !== undefined) await kvSet('rates_updated', new Date().toISOString());
   send(res, 200, { ok: true });
 });
+route('POST', '/api/admin/rates-confirm', 'admin', async (req, res) => { await kvSet('rates_updated', new Date().toISOString()); await kvSet('rates_alert_at', 0); send(res, 200, { ok: true }); });
 
 
 // ---------- 2FA, respaldo automático y sesiones ----------
@@ -1093,6 +1182,68 @@ route('POST', '/api/2fa/disable', 'any', async (req, res, u, b) => {
   await C.users.updateOne({ _id: u.id }, { $set: { totp_on: 0, totp_secret: null, totp_recovery: [], totp_pending: null } });
   send(res, 200, { ok: true });
 });
+
+// ---------- restaurar un respaldo (solo dueño) ----------
+const RESTORE_COLS = ['users', 'products', 'wallets', 'orders', 'ledger', 'topup_requests', 'kv', 'audit'];
+const COUNTER_COLS = ['users', 'ledger', 'products', 'orders', 'topup_requests', 'audit'];
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const revive = v => typeof v === 'string' ? (ISO.test(v) ? new Date(v) : v) : Array.isArray(v) ? v.map(revive) : (v && typeof v === 'object') ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, revive(x)])) : v;
+/** Nunca borra nada. mode "missing": repone solo lo que falta. mode "overwrite": además sobrescribe lo que exista con lo del respaldo. */
+async function restoreBackup(data, mode, adminId) {
+  const report = {};
+  for (const n of RESTORE_COLS) {
+    const docs = Array.isArray(data[n]) ? data[n] : [];
+    if (!docs.length) continue;
+    const before = await C[n].countDocuments({}), ops = [];
+    let skipped = 0;
+    for (const raw of docs) {
+      if (!raw || raw._id === undefined || raw._id === null) { skipped++; continue; }
+      const { _id, ...rest } = revive(raw);
+      if (n === 'users') {
+        if (_id === adminId) { skipped++; continue; } // tu propia cuenta no se toca
+        rest.username_lc = String(rest.username_lc || rest.username || '').toLowerCase();
+      }
+      if (n === 'kv' && (/^pr_/.test(String(_id)) || _id === 'backup_try')) { skipped++; continue; }
+      if (n === 'topup_requests' && rest.image === '(imagen omitida)') rest.image = null;
+      let upd;
+      if (n === 'users' && !rest.password_hash) { // respaldo de Telegram: sin contraseñas. Las cuentas nuevas quedan con clave bloqueada hasta que se la cambies.
+        const lock = { password_hash: A.hashPassword(crypto.randomBytes(18).toString('hex')), needs_password: 1 };
+        upd = mode === 'overwrite' ? { $set: rest, $setOnInsert: lock } : { $setOnInsert: { ...rest, ...lock } };
+      } else upd = mode === 'overwrite' ? { $set: rest } : { $setOnInsert: rest };
+      if (!Object.keys(rest).length) { skipped++; continue; }
+      ops.push({ updateOne: { filter: { _id }, update: upd, upsert: true } });
+    }
+    let errors = 0;
+    for (let i = 0; i < ops.length; i += 500) {
+      try { await C[n].bulkWrite(ops.slice(i, i + 500), { ordered: false }); }
+      catch (e) { errors += (e.writeErrors && e.writeErrors.length) || 1; console.error('restaurar', n, e.message); }
+    }
+    report[n] = { in_backup: docs.length, added: (await C[n].countDocuments({})) - before, skipped, errors };
+  }
+  for (const n of COUNTER_COLS) { // que los próximos números (#pedido, etc.) no choquen con los restaurados
+    const top = (await C[n].find({}).sort({ _id: -1 }).limit(1).toArray())[0], mx = top ? Number(top._id) || 0 : 0;
+    const c = await C.counters.findOne({ _id: n });
+    if (!c || (c.seq || 0) < mx) await C.counters.updateOne({ _id: n }, { $set: { seq: mx } }, { upsert: true });
+  }
+  return report;
+}
+route('POST', '/api/admin/restore', 'admin', async (req, res, admin, b) => {
+  const data = b.data;
+  if (!data || typeof data !== 'object' || data.version !== 1 || !Array.isArray(data.users)) return send(res, 400, { error: 'Ese archivo no parece un respaldo de este panel.' });
+  const mode = b.mode === 'overwrite' ? 'overwrite' : 'missing';
+  const counts = {}; for (const n of RESTORE_COLS) if (Array.isArray(data[n])) counts[n] = data[n].length;
+  if (b.dry_run) return send(res, 200, { ok: true, exported_at: data.exported_at || null, counts, stripped: data.users.some(x => !x.password_hash) });
+  const me = await C.users.findOne({ _id: admin.id });
+  if (!me || !A.verifyPassword(String(b.password || ''), me.password_hash)) return send(res, 403, { error: 'Contraseña incorrecta' });
+  if (me.totp_on && !(await secondFactor(me, String(b.code || '').trim()))) return send(res, 403, { error: 'Código de verificación incorrecto' });
+  if (String(b.confirm || '').trim().toUpperCase() !== 'RESTAURAR') return send(res, 400, { error: 'Escribe RESTAURAR para confirmar.' });
+  if (!b.force) { try { await sendBackup(true); } catch (e) { return send(res, 409, { need_force: true, error: 'No pude mandarte primero una copia de seguridad del estado actual a Telegram (' + e.message + '). ¿Continuar sin ella?' }); } }
+  const report = await restoreBackup(data, mode, admin.id);
+  const added = Object.entries(report).filter(([, r]) => r.added).map(([k, r]) => `${k}: +${r.added}`).join(', ') || 'nada nuevo';
+  TG.notifyAdmins(`♻️ ${admin.username} restauró un respaldo (${mode === 'overwrite' ? 'sobrescribiendo' : 'solo lo que faltaba'}). ${added}.`).catch(() => {});
+  send(res, 200, { ok: true, report });
+});
+
 route('POST', '/api/admin/backup-send', 'admin', async (req, res) => {
   try { await sendBackup(true); send(res, 200, { ok: true }); }
   catch (e) { send(res, 502, { error: e.message }); }
@@ -1121,6 +1272,32 @@ async function checkLowBalance() {
     await kvSet('balance_low', '1');
     await lowBalanceAlert(`Disponible: ${e4ToStr(b.v.availableE4)} USDT (tu alerta: ${th}).`);
   } else if (b.v && b.v.availableE4 !== null) await kvSet('balance_low', '0');
+}
+
+
+// ---------- vigilancia: Central One caído y tasas CUP viejas ----------
+let provFails = 0;
+async function checkProvider() {
+  balCache.at = 0;
+  const b = await providerBalance();
+  if (b.err) {
+    provFails++;
+    if (provFails === 3) { await kvSet('provider_down', '1'); TG.notifyAdmins(`⚠️ Central One no responde (${String(b.err).slice(0, 120)}). Tus revendedores no podrán recargar hasta que vuelva. Puedes activar el Modo mantenimiento en Resumen.`).catch(() => {}); }
+  } else {
+    if (provFails >= 3) TG.notifyAdmins('✅ Central One volvió a responder.').catch(() => {});
+    provFails = 0; if ((await kvGet('provider_down') || {}).value === '1') await kvSet('provider_down', '0');
+  }
+}
+async function checkRates() {
+  const st = await getSettings(), days = Number(st.rate_stale_days) || 0;
+  if (!days || !(Number(st.rate_transfer) > 0 || Number(st.rate_mobile) > 0)) return;
+  const stamp = await kvGet('rates_updated');
+  if (!stamp) return kvSet('rates_updated', new Date().toISOString()); // instalaciones viejas: empieza a contar desde hoy
+  const age = Date.now() - new Date(stamp.value).getTime(), last = Number(((await kvGet('rates_alert_at')) || {}).value || 0);
+  if (age > days * 864e5 && Date.now() - last > 24 * 3600e3) {
+    await kvSet('rates_alert_at', Date.now());
+    TG.notifyAdmins(`⏰ Tus tasas CUP llevan ${Math.floor(age / 864e5)} días sin actualizarse (transferencia ${st.rate_transfer || '—'} · saldo móvil ${st.rate_mobile || '—'}). Si siguen vigentes pulsa "Siguen vigentes" en Resumen; si no, cámbialas para no vender con precio desfasado.`).catch(() => {});
+  }
 }
 
 // ---------- catálogo ----------
@@ -1225,6 +1402,10 @@ const SEC = {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
+    if (url.pathname === '/status') { // para monitores externos (UptimeRobot, BetterStack…): responde 503 si la base de datos no contesta
+      let db = true; try { await Promise.race([C.kv.findOne({ _id: 'ping' }), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]); } catch { db = false; }
+      res.writeHead(db ? 200 : 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ ok: db, db }));
+    }
     if (url.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok'); }
     if ((url.pathname === '/webhooks/central-one' || url.pathname === '/api/webhooks') && req.method === 'POST') return await handleWebhook(req, res);
     if (url.pathname.startsWith('/api/')) {
@@ -1233,7 +1414,7 @@ const server = http.createServer(async (req, res) => {
       let body = {};
       if (req.method === 'POST') {
         if (!(req.headers['content-type'] || '').startsWith('application/json')) return send(res, 415, { error: 'Content-Type debe ser JSON' });
-        body = await readBody(req, url.pathname === '/api/topup-requests' ? 2500000 : 20000); // la foto del comprobante va en la solicitud de saldo
+        body = await readBody(req, url.pathname === '/api/topup-requests' ? 2500000 : url.pathname === '/api/admin/restore' ? 60e6 : 20000); // la foto del comprobante va en la solicitud de saldo
       }
       let user = null;
       const ap = url.pathname, doAudit = (req.method === 'POST' && !AUDIT_SKIP.has(ap)) || AUDIT_GET.has(ap);
@@ -1277,6 +1458,8 @@ const server = http.createServer(async (req, res) => {
   setTimeout(recoverPending, 5000);
   if (MODE === 'real') provider.ping().then(() => console.log('Llave de Central One: OK'), e => console.error('ATENCIÓN: la llave de Central One no funciona:', e.message));
   setTimeout(syncSafe, 500);
+  setInterval(() => checkProvider().catch(() => {}), 5 * 60e3); setTimeout(() => checkProvider().catch(() => {}), 45000);
+  setInterval(() => checkRates().catch(() => {}), 3600e3); setTimeout(() => checkRates().catch(() => {}), 50000);
   setInterval(() => autoBackup().catch(e => console.error('respaldo', e.message)), 3600e3); setTimeout(() => autoBackup().catch(() => {}), 60000);
   const purgeAudit = () => { if (C.audit.deleteMany) C.audit.deleteMany({ at: { $lt: new Date(Date.now() - 180 * 864e5) } }).catch(() => {}); };
   setInterval(purgeAudit, 24 * 3600e3); setTimeout(purgeAudit, 30000);

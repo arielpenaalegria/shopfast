@@ -98,3 +98,18 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
   del sub-admin te llega por Telegram y aparece en *Resumen → Saldo movido por tu equipo* y en *Registro → Saldo del equipo*.
 - **Fondos** (dueño y sub-admins con permiso "Ver fondos"): saldo de Central One, total USDT/CUP de todos los revendedores,
   saldo por revendedor con buscador y, solo para el dueño, los límites de cada sub-admin.
+
+## Novedades de esta versión
+- **Restaurar respaldo** (Resumen → "Restaurar un respaldo", solo el dueño): sube el `.json` descargado o el `.json.gz` de Telegram. Primero ves qué trae sin cambiar nada;
+  pide tu contraseña (y tu código 2FA) y escribir RESTAURAR; antes manda a tu Telegram una copia del estado actual. **Nunca borra datos**: "solo reponer lo que falte"
+  (recomendado) o "sobrescribir con lo del respaldo". El respaldo de Telegram no trae contraseñas: las cuentas que se repongan quedan con la clave bloqueada hasta que se la cambies.
+- **Avisos de seguridad por Telegram**: 3 y 5 intentos fallidos en una cuenta de dueño/sub-admin, y entrada desde una IP nueva.
+- **Tasas CUP**: se anota cuándo las actualizaste; si pasan N días (por defecto 3) te avisa por Telegram y en el panel. Botón "Siguen vigentes".
+- **Olvidé mi contraseña** (revendedores): código de 6 dígitos por Telegram (vence en 10 min, 5 intentos). Sin Telegram conectado, te avisa a ti para que le cambies la clave. Dueño y sub-admins no pueden usar este camino.
+- **Historial del revendedor**: filtros (estado/tipo, moneda, fechas, buscador) y descarga CSV de recargas y de movimientos de saldo.
+- **Modo mantenimiento** (Resumen): pausa las recargas con un mensaje para tus revendedores; ellos siguen viendo sus saldos y pueden pedir saldo.
+- **Suspender pagos** (Saldo → "Pagos por método"): botón por método (USDT, Transferencia, Saldo móvil). Suspendido, los revendedores no pueden pedir saldo por ahí; sus saldos y solicitudes ya enviadas no cambian.
+- **Ofertas separadas por tipo**: dentro de cada juego/región el revendedor ve pestañas Diamantes / Pases / Membresías (y Otros). Se detecta por el nombre del paquete;
+  si alguno cae en el tipo equivocado, corrígelo en Catálogo → "Lo que ven tus revendedores" → botón "Tipo".
+- **Monitoreo**: la dirección `/status` responde 503 si la base de datos no contesta. Úsala en UptimeRobot o BetterStack (gratis) para que te avisen si el panel se cae.
+  También te avisa por Telegram si Central One deja de responder (y cuando vuelve).

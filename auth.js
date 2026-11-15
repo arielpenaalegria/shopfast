@@ -88,8 +88,9 @@ function loginBlocked(key) {
   return f && f.n >= 5 && Date.now() - f.t < 15 * 60 * 1000;
 }
 function loginFail(key) {
-  const f = fails.get(key);
-  fails.set(key, { n: (f && Date.now() - f.t < 15 * 60 * 1000 ? f.n : 0) + 1, t: Date.now() });
+  const f = fails.get(key), n = (f && Date.now() - f.t < 15 * 60 * 1000 ? f.n : 0) + 1;
+  fails.set(key, { n, t: Date.now() });
+  return n;
 }
 function loginOk(key) { fails.delete(key); }
 
