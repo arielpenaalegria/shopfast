@@ -39,6 +39,9 @@ const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
 const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
 const priceIn = (p, c) => p.prices ? (p.prices[c] != null ? p.prices[c] : (c === 'usdt' ? p.price : null)) : (c === 'usdt' ? p.price : null);
 let userQuery = '', ME = null, auditCat = 'all', auditQ = '';
+let ordF = { status: '', q: '', from: '', to: '' }, reqF = { status: '', method: '', q: '', from: '', to: '' };
+const qs = o => Object.entries(o).filter(([, v]) => v !== '' && v != null).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+const hasF = F => Object.values(F).some(v => v);
 let payCur = 'usdt'; try { payCur = localStorage.getItem('payCur') || 'usdt'; } catch {}
 const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
 
@@ -139,10 +142,16 @@ function show(which) {
   $('login').classList.toggle('hidden', which !== 'login'); $('app').classList.toggle('hidden', which !== 'app');
   if (which === 'login') $('who').replaceChildren();
 }
+const lc = el('input', { id: 'lc', class: 'hidden', placeholder: 'Código de 6 dígitos (o de recuperación)', inputmode: 'numeric', autocomplete: 'one-time-code' });
+$('lp').after(lc);
 $('lb').onclick = async () => {
-  try { await api('POST', '/api/login', { username: $('lu').value, password: $('lp').value }); $('lp').value = ''; boot(); }
-  catch (e) { msg($('lm'), e.message, 'err'); }
+  try {
+    const d = await api('POST', '/api/login', { username: $('lu').value, password: $('lp').value, code: lc.value });
+    if (d.need_2fa) { lc.classList.remove('hidden'); lc.focus(); return msg($('lm'), 'Escribe el código de tu app de autenticación.', 'ok'); }
+    $('lp').value = ''; lc.value = ''; lc.classList.add('hidden'); $('lm').replaceChildren(); boot();
+  } catch (e) { msg($('lm'), e.message, 'err'); }
 };
+lc.addEventListener('keydown', e => e.key === 'Enter' && $('lb').click());
 $('lp').addEventListener('keydown', e => e.key === 'Enter' && $('lb').click());
 $('lu').placeholder = 'Correo o usuario';
 // Registro de revendedores (si el admin lo tiene abierto)
@@ -204,6 +213,68 @@ function passwordCard() {
   };
   return card('Cambiar mi contraseña', el('div', { class: 'row' }, cur), el('div', { class: 'row' }, n1, n2), el('div', { class: 'acts' }, b), box);
 }
+
+/** Filtros de una lista: chips de estado (y de método), lupa y rango de fechas. reload() vuelve a pedir la lista al servidor. */
+function filterBar(F, statuses, reload, methods) {
+  const mkChips = (key, list) => {
+    const w = el('div', { class: 'chips', style: 'margin-bottom:8px' });
+    for (const [k, l] of list) w.append(el('button', { type: 'button', class: 'chip' + (F[key] === k ? ' on' : ''), onclick: ev => { F[key] = k; for (const c of w.children) c.classList.toggle('on', c === ev.currentTarget); reload(); } }, l));
+    return w;
+  };
+  const si = el('input', { type: 'search', placeholder: 'Buscar nombre, #número, destino…', value: F.q, autocomplete: 'off', 'aria-label': 'Buscar' });
+  let t; si.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { F.q = si.value; reload(); }, 400); });
+  const d1 = el('input', { type: 'date', value: F.from, 'aria-label': 'Desde' }), d2 = el('input', { type: 'date', value: F.to, 'aria-label': 'Hasta' });
+  d1.onchange = () => { F.from = d1.value; reload(); }; d2.onchange = () => { F.to = d2.value; reload(); };
+  const clr = el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { si.value = ''; F.q = ''; reload(); si.focus(); } }, '✕');
+  return el('div', {}, mkChips('status', statuses), methods ? mkChips('method', methods) : null,
+    el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), si, clr),
+    el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Desde', d1), el('label', { class: 'fld' }, 'Hasta', d2)));
+}
+
+/** Verificación en dos pasos (app de autenticación). Solo dueño y sub-admins. */
+function twoFaCard() {
+  const box = el('div'), body = el('div');
+  const showCodes = codes => {
+    body.replaceChildren(el('div', { class: 'msg ok' }, '✓ Verificación en dos pasos activada.'),
+      el('div', { class: 'mut', style: 'margin:8px 0' }, 'Guarda estos códigos de recuperación en un lugar seguro. Cada uno sirve una sola vez si pierdes tu celular y NO se vuelven a mostrar:'),
+      el('div', { class: 'addr' }, codes.join('   ')),
+      el('div', { class: 'acts' }, el('button', { class: 'sm', onclick: () => adminView() }, 'Ya los guardé')));
+  };
+  const draw = () => {
+    body.replaceChildren();
+    if (ME.totp) {
+      const pw = el('input', { type: 'password', placeholder: 'Tu contraseña', autocomplete: 'current-password' });
+      const cd = el('input', { placeholder: 'Código de tu app (o de recuperación)', inputmode: 'numeric', autocomplete: 'one-time-code' });
+      const off = el('button', { class: 'red sm' }, 'Desactivar');
+      off.onclick = async () => { off.disabled = true; try { await api('POST', '/api/2fa/disable', { password: pw.value, code: cd.value }); ME.totp = false; draw(); } catch (e) { msg(box, e.message, 'err'); off.disabled = false; } };
+      put(body, el('div', { class: 'msg ok' }, '✓ Activada. Al entrar te pediremos el código de tu app.'),
+        el('details', { class: 'regd' }, el('summary', {}, el('b', {}, 'Desactivar'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
+          el('div', { class: 'row' }, pw), el('div', { class: 'row' }, cd), el('div', { class: 'acts', style: 'margin-bottom:10px' }, off)));
+    } else {
+      const on = el('button', { class: 'sm' }, 'Activar verificación en dos pasos');
+      on.onclick = async () => {
+        on.disabled = true;
+        try {
+          const d = await api('POST', '/api/2fa/start', {});
+          const cd = el('input', { placeholder: 'Código de 6 dígitos', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '8' });
+          const ok = el('button', { class: 'sm' }, 'Confirmar y activar');
+          ok.onclick = async () => { ok.disabled = true; try { const r = await api('POST', '/api/2fa/confirm', { code: cd.value }); ME.totp = true; ME.must_2fa = false; showCodes(r.recovery); } catch (e) { msg(box, e.message, 'err'); ok.disabled = false; } };
+          body.replaceChildren(el('div', { class: 'mut' }, '1) En Google Authenticator, Authy o similar agrega una cuenta con esta clave (o toca el enlace si estás en el celular):'),
+            el('div', { class: 'addr' }, d.secret.match(/.{1,4}/g).join(' ')), el('a', { href: d.uri }, 'Abrir en mi app de autenticación'),
+            el('div', { class: 'mut', style: 'margin-top:10px' }, '2) Escribe el código de 6 dígitos que te muestre:'), el('div', { class: 'row' }, cd), el('div', { class: 'acts' }, ok));
+        } catch (e) { msg(box, e.message, 'err'); on.disabled = false; }
+      };
+      put(body, el('div', { class: 'mut' }, 'Protege tu cuenta con un código de tu celular además de la contraseña. Muy recomendado: por aquí se mueve el dinero.'), el('div', { class: 'acts' }, on));
+    }
+  };
+  draw();
+  return card('Verificación en dos pasos (2FA)', body, box);
+}
+function sessionsCard() {
+  return card('Sesiones', el('div', { class: 'mut' }, 'Si perdiste un teléfono o crees que alguien entró, cierra tu sesión en todos los dispositivos (también en este).'),
+    el('div', { class: 'acts' }, el('button', { class: 'red sm', onclick: async () => { if (!confirm('¿Cerrar la sesión en todos tus dispositivos?')) return; try { await api('POST', '/api/logout-all', {}); } catch {} show('login'); } }, 'Cerrar todas las sesiones')));
+}
+const accountCards = staff => [passwordCard(), staff ? twoFaCard() : null, sessionsCard()];
 
 /* =================== REVENDEDOR =================== */
 const pick = { family: null, variant: null, product: null, fill: null };
@@ -435,7 +506,7 @@ async function resellerView() {
         el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + money(l.amount, l.currency))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
   }
   if (rtab === 'cuenta') {
-    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), passwordCard());
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
   }
   // Refresco automático mientras haya algo en curso, pero sin borrar lo que el revendedor está escribiendo
   if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) || reqs.some(r => r.status === 'pending')) {
@@ -450,24 +521,37 @@ async function adminView() {
   clearTimeout(timer);
   const out = $('app');
   const OWN = ME.role === 'admin', can = k => OWN || !!(ME.perms && ME.perms[k]), none = v => Promise.resolve(v);
+  if (ME.role === 'subadmin' && ME.must_2fa) {
+    out.replaceChildren();
+    return put(out, el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'El dueño exige verificación en dos pasos. Actívala aquí para poder trabajar.'), twoFaCard());
+  }
   const [users, orders, prods, st, reqs] = await Promise.all([can('revendedores') ? api('GET', '/api/admin/users') : none([]), can('pedidos') ? api('GET', '/api/admin/orders') : none([]),
     OWN ? api('GET', '/api/admin/products') : none([]), OWN ? api('GET', '/api/admin/status') : none({ settings: {} }), can('saldo') ? api('GET', '/api/admin/topup-requests') : none([])]);
   const cat = tab === 'catalogo' ? await api('GET', '/api/admin/catalog?q=' + encodeURIComponent(catQuery)) : [];
   const rep = tab === 'reportes' ? await api('GET', '/api/admin/report?period=' + period) : null;
   out.replaceChildren();
   const note = el('div');
+  const adjust = async (r, c) => {
+    const lim = OWN ? '' : `\n(Tu límite por ajuste: ${c === 'usdt' ? ME.perms.max_adj_usdt + ' USDT' : Number(ME.perms.max_adj_cup).toLocaleString('es') + ' CUP'})`;
+    const a = prompt(`Saldo ${CUR_LONG[c]} de ${r.username}\nMonto a abonar (negativo para restar):${lim}`); if (!a) throw new Error('Cancelado');
+    let note = '';
+    if (!OWN) { note = prompt('Motivo del ajuste (obligatorio; queda en el registro):') || ''; if (note.trim().length < 3) throw new Error('Escribe el motivo del ajuste.'); }
+    await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.'), currency: c, note });
+  };
   const act = (label, fn, cls = 'sec') => el('button', { class: cls + ' sm', onclick: async () => { try { await fn(); await adminView(); } catch (e) { if (e.message !== 'Cancelado') alert(e.message); } } }, label);
   const pending = orders.filter(o => o.status === 'unknown').length, preq = reqs.filter(r => r.status === 'pending').length;
   const pend = users.filter(u => u.pending).length;
   const tSaldo = ['saldo', 'Saldo' + (preq ? ` (${preq})` : '')], tPed = ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')], tRev = ['revendedores', 'Revendedores' + (pend ? ` (${pend})` : '')];
-  const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tPed, ['reportes', 'Ganancias'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro']]
-    : [can('saldo') && tSaldo, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
+  const tFondos = ['fondos', 'Fondos'];
+  const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tFondos, tPed, ['reportes', 'Ganancias'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro']]
+    : [can('saldo') && tSaldo, can('saldos') && tFondos, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
   if (!tabs.some(t => t[0] === tab)) { tab = tabs[0][0]; if (tab === 'cuenta' && can('saldo')) tab = 'saldo'; }
   put(out, el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
   if (st.balance_low) put(out, el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'Tu saldo en Central One está bajo o no alcanzó para un pedido. Recarga para no rechazar pedidos.'));
 
   if (tab === 'resumen') {
     const today = new Date().toISOString().slice(0, 10);
+    const feed = await api('GET', '/api/admin/audit?cat=money&limit=8');
     const done = orders.filter(o => o.status === 'completed' && o.created_at.startsWith(today));
     const pb = st.provider_balance;
     const th = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: String(st.low_balance_threshold || ''), placeholder: 'Ej. 20' });
@@ -480,6 +564,15 @@ async function adminView() {
         el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Vendido'), el('b', {}, usdt(done.reduce((s, o) => s + o.price, 0)))),
         el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Ganancia'), el('b', { style: 'color:var(--ok)' }, usdt(done.reduce((s, o) => s + Number(o.margin), 0)))),
         el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Por revisar'), el('b', { style: pending + preq ? 'color:var(--warn)' : '' }, String(pending + preq))))),
+      (() => {
+        const line = r => {
+          const d = r.detail || {};
+          const what = r.action === 'admin/balance' ? `${Number(d.amount) >= 0 ? 'agregó' : 'quitó'} ${money(Math.abs(Number(d.amount)), d.currency || 'usdt')} ${Number(d.amount) >= 0 ? 'a' : 'de'} ${r.target || '?'}` : `aprobó saldo · monto ${d.amount || 'según solicitud'} · ${r.target || ''}`;
+          return el('div', { style: 'display:block' }, el('div', { style: 'display:flex;justify-content:space-between;gap:8px' }, el('div', { class: 'l' }, el('div', {}, el('b', {}, r.actor), ' ' + what), d.note ? el('div', { class: 'mut' }, 'Motivo: ' + d.note) : null), el('div', { class: 'r mut' }, r.at)));
+        };
+        return card('Saldo movido por tu equipo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Lo que tus sub-administradores aprueban o ajustan a mano. También te llega aviso por Telegram.'),
+          feed.length ? el('div', { class: 'list' }, ...feed.map(line)) : el('div', { class: 'mut' }, 'Todavía no han movido saldo.'), el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { auditCat = 'money'; tab = 'registro'; adminView(); } }, 'Ver todo en Registro')));
+      })(),
       card('Alerta de saldo bajo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te aviso por Telegram (y aquí arriba) cuando el saldo de Central One baje de este monto. 0 = desactivada.'),
         el('div', { class: 'row' }, th, act('Guardar', () => api('POST', '/api/admin/settings', { low_balance_threshold: th.value.replace(',', '.') || 0 }), ''))),
       (() => {
@@ -502,8 +595,17 @@ async function adminView() {
           el('div', { class: 'acts' }, act('Publicar', () => api('POST', '/api/admin/settings', { announcement: ta.value }), ''), st.settings.announcement ? act('Quitar', () => api('POST', '/api/admin/settings', { announcement: '' }), 'red') : null));
       })(),
       telegramCard(st, adminView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'Desactivado. Para activarlo crea un bot con @BotFather y pon su token en la variable TELEGRAM_BOT_TOKEN de Render.')),
-      card('Respaldo', el('div', { class: 'mut' }, 'Descarga una copia de revendedores, saldos y pedidos. Hazlo cada semana y guárdala en un lugar seguro: contiene los datos de tus revendedores.'),
-        el('div', { class: 'acts' }, el('a', { href: '/api/admin/backup', download: '' }, el('button', { class: 'sm' }, '⬇ Descargar respaldo')))),
+      (() => {
+        const bkBox = el('div'), bkAuto = el('input', { type: 'checkbox' });
+        bkAuto.checked = !!Number(st.settings.auto_backup ?? 1);
+        bkAuto.onchange = async () => { try { await api('POST', '/api/admin/settings', { auto_backup: bkAuto.checked ? 1 : 0 }); } catch (e) { msg(bkBox, e.message, 'err'); } };
+        const bkNow = el('button', { class: 'sm' }, '📨 Enviar respaldo a mi Telegram');
+        bkNow.onclick = async () => { bkNow.disabled = true; try { await api('POST', '/api/admin/backup-send', {}); msg(bkBox, 'Enviado. Revisa tu Telegram.', 'ok'); } catch (e) { msg(bkBox, e.message, 'err'); } bkNow.disabled = false; };
+        return card('Respaldo', el('div', { class: 'mut' }, 'Cada 7 días el panel te manda una copia a tu Telegram (sin contraseñas ni fotos). Último envío: ' + (st.backup_last ? new Date(st.backup_last).toLocaleString('es') : 'todavía no') + '.'),
+          st.backup_err ? el('div', { class: 'msg err', style: 'margin:8px 0' }, 'El último intento falló: ' + st.backup_err) : null,
+          el('label', { class: 'chk', style: 'margin-top:10px' }, bkAuto, el('span', {}, el('b', {}, 'Respaldo automático semanal'))),
+          el('div', { class: 'acts' }, bkNow, el('a', { href: '/api/admin/backup', download: '' }, el('button', { class: 'sec sm' }, '⬇ Descargar completo (con claves)'))), bkBox);
+      })(),
       card('Estado', el('div', { class: 'mut' }, 'Catálogo actualizado: ' + (st.catalog_synced_at ? st.catalog_synced_at + ' UTC' : 'todavía no')),
         el('div', { class: 'mut' }, 'Productos activos: ' + prods.filter(p => p.active).length + ' · Revendedores: ' + users.length),
         el('div', { class: 'mut' }, 'Webhooks: ' + (st.webhooks ? 'activos' + (st.webhook_test_at ? ' · última prueba ' + st.webhook_test_at + ' UTC' : '') : 'sin configurar (se usa consulta periódica)')),
@@ -526,17 +628,7 @@ async function adminView() {
     // Payment info textareas
     const ptTA = el('textarea', { rows: '3', placeholder: 'Ej.: Banco X · Cuenta 1234 · Nombre Y', style: 'width:100%' }); ptTA.value = dep.payment_transfer || '';
     const pmTA = el('textarea', { rows: '3', placeholder: 'Ej.: +53 5XXXXXXX · Transfermóvil', style: 'width:100%' }); pmTA.value = dep.payment_mobile || '';
-    put(out, 
-      OWN && card('USDT BEP20', dep.wallet
-        ? el('div', {}, el('div', { class: 'mut' }, 'Billetera que ven tus revendedores:'), el('div', { class: 'addr' }, dep.wallet),
-          el('div', { class: 'mut', style: 'margin-top:6px' }, dep.auto ? `Verificación automática activa (${dep.min_confirmations} confirmaciones).` : 'Verificación automática desactivada: falta BSC_RPC_URL en Render.'))
-        : el('div', { class: 'mut' }, 'Sin configurar. En Render agrega USDT_WALLET (tu dirección BEP20) y BSC_RPC_URL (tu URL de NodeReal).')),
-      OWN && card('Datos de Transferencia bancaria', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por transferencia. Deja vacío para ocultar ese método.'), ptTA,
-        el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_transfer: ptTA.value }), ''))),
-      OWN && card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
-        el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
-      card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.' + (OWN ? '' : ` Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`)),
-      reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => {
+    const reqRow = r => {
         const holder = el('div'), vb = el('button', { class: 'ghost' }, 'Ver comprobante');
         vb.onclick = () => showImg(r, holder, vb);
         const v = r.verify === 'verified' && r.wallet_owner && r.wallet_owner !== r.username ? ['⚠ Revisar', 'warn'] : (VER[r.verify] || VER.manual);
@@ -568,11 +660,30 @@ async function adminView() {
               const m = prompt('Motivo (lo verá el revendedor):', ''); if (m === null) throw new Error('Cancelado');
               await api('POST', '/api/admin/topup-decide', { id: r.id, approve: false, note: m });
             }, 'red')) : null);
-      })) : el('div', { class: 'mut' }, 'No hay solicitudes.')),
+};
+    const reqBox = el('div'), reqCnt = el('div', { class: 'mut', style: 'margin:6px 0' });
+    const drawReqs = list => {
+      reqCnt.textContent = `${list.length} solicitud${list.length === 1 ? '' : 'es'}` + (list.length >= 100 ? ' (las más recientes: afina el filtro para ver otras)' : '');
+      reqBox.replaceChildren(list.length ? el('div', { class: 'list' }, ...list.map(reqRow)) : el('div', { class: 'mut' }, hasF(reqF) ? 'Ninguna solicitud coincide con ese filtro.' : 'No hay solicitudes.'));
+    };
+    const reloadReqs = async () => { reqBox.replaceChildren(el('div', { class: 'mut' }, 'Buscando…')); try { drawReqs(await api('GET', '/api/admin/topup-requests?' + qs({ ...reqF, limit: 200 }))); } catch (e) { msg(reqBox, e.message, 'err'); } };
+    const reqFilters = filterBar(reqF, [['', 'Todas'], ['pending', 'Pendientes'], ['approved', 'Aprobadas'], ['rejected', 'Rechazadas']], reloadReqs, [['', 'Todos los métodos'], ['usdt', 'USDT'], ['transfer', 'Transferencia'], ['mobile', 'Saldo móvil']]);
+    put(out, 
+      OWN && card('USDT BEP20', dep.wallet
+        ? el('div', {}, el('div', { class: 'mut' }, 'Billetera que ven tus revendedores:'), el('div', { class: 'addr' }, dep.wallet),
+          el('div', { class: 'mut', style: 'margin-top:6px' }, dep.auto ? `Verificación automática activa (${dep.min_confirmations} confirmaciones).` : 'Verificación automática desactivada: falta BSC_RPC_URL en Render.'))
+        : el('div', { class: 'mut' }, 'Sin configurar. En Render agrega USDT_WALLET (tu dirección BEP20) y BSC_RPC_URL (tu URL de NodeReal).')),
+      OWN && card('Datos de Transferencia bancaria', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por transferencia. Deja vacío para ocultar ese método.'), ptTA,
+        el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_transfer: ptTA.value }), ''))),
+      OWN && card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
+        el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
+      card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.' + (OWN ? '' : ` Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`)),
+      reqFilters, reqCnt, reqBox),
       OWN && card('Billeteras de confianza', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Los pagos desde estas billeteras se abonan solos a su revendedor. No pongas aquí billeteras de exchanges.'),
         wallets.length ? el('div', { class: 'list' }, ...wallets.map(w => el('div', {},
           el('div', { class: 'l' }, el('div', {}, w.username || '?'), el('div', { class: 'mut addr-s' }, w.address)),
           el('div', { class: 'r' }, act('Quitar', () => api('POST', '/api/admin/wallet-remove', { address: w.address }), 'red'))))) : el('div', { class: 'mut' }, 'Ninguna todavía. Se agregan al aprobar un pago y marcar "confiar".')));
+    if (hasF(reqF)) reloadReqs(); else drawReqs(reqs);
   }
 
   if (tab === 'reportes' && rep) {
@@ -658,10 +769,7 @@ async function adminView() {
         el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), OWN ? el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`) : null),
         el('div', { style: 'text-align:right;font-weight:800;line-height:1.35' }, ...CURS.map(c => el('div', { style: c === 'usdt' ? 'font-size:1.1rem' : 'font-size:.9rem' }, money((r.balances || { usdt: r.balance })[c] || 0, c))))),
       el('div', { class: 'acts' },
-        ...(OWN ? CURS : []).map(c => act('± ' + CUR_S[c], async () => {
-          const a = prompt(`Saldo ${CUR_LONG[c]} de ${r.username}\nMonto a abonar (negativo para restar):`); if (!a) throw new Error('Cancelado');
-          await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.'), currency: c });
-        }, c === 'usdt' ? '' : 'sec')),
+        ...(can('ajustar') ? CURS : []).map(c => act('± ' + CUR_S[c], () => adjust(r, c), c === 'usdt' ? '' : 'sec')),
         OWN && act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
         OWN && act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
         act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, userQuery.trim() ? 'Ningún revendedor coincide con "' + userQuery.trim() + '".' : 'Aún no tienes revendedores.')));
@@ -677,33 +785,81 @@ async function adminView() {
   }
 
   if (tab === 'pedidos') {
-    put(out, card('Pedidos', el('div', { class: 'mut' }, 'Los "Verificando" necesitan tu revisión: compruébalos en el portal de Central One con la referencia.'),
-      orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', { style: 'display:block' },
-        el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-          el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
-          el('div', { class: 'r' }, el('div', {}, money(o.paid ?? o.price, o.currency)), OWN ? el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2) + ' USDT') : null, tag(o.status))),
-        o.detail ? el('div', { class: 'mut', style: 'margin-top:4px' }, o.detail) : null,
-        o.status === 'unknown' ? el('div', { class: 'acts' },
-          act('Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
-          act('Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), ''),
-          act('No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null))) : el('div', { class: 'mut' }, 'Sin pedidos todavía.')));
+    const box = el('div'), cnt = el('div', { class: 'mut', style: 'margin:6px 0' });
+    const row = o => el('div', { style: 'display:block' },
+      el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
+        el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
+        el('div', { class: 'r' }, el('div', {}, money(o.paid ?? o.price, o.currency)), OWN ? el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2) + ' USDT') : null, tag(o.status))),
+      o.detail ? el('div', { class: 'mut', style: 'margin-top:4px' }, o.detail) : null,
+      o.status === 'unknown' ? el('div', { class: 'acts' },
+        act('Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
+        act('Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), ''),
+        act('No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null);
+    const draw = list => {
+      cnt.textContent = `${list.length} pedido${list.length === 1 ? '' : 's'}` + (list.length >= 300 ? ' (los 300 más recientes: afina el filtro para ver otros)' : '');
+      box.replaceChildren(list.length ? el('div', { class: 'list' }, ...list.map(row)) : el('div', { class: 'mut' }, hasF(ordF) ? 'Ningún pedido coincide con ese filtro.' : 'Sin pedidos todavía.'));
+    };
+    const reload = async () => { box.replaceChildren(el('div', { class: 'mut' }, 'Buscando…')); try { draw(await api('GET', '/api/admin/orders?' + qs({ ...ordF, limit: 300 }))); } catch (e) { msg(box, e.message, 'err'); } };
+    put(out, card('Pedidos', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Los "Verificando" necesitan tu revisión: compruébalos en el portal de Central One con la referencia.'),
+      filterBar(ordF, [['', 'Todos'], ['unknown', 'Para revisar'], ['active', 'En proceso'], ['completed', 'Completados'], ['failed', 'Fallidos']], reload), cnt, box));
+    if (hasF(ordF)) reload(); else draw(orders);
+  }
+
+  /* ---------- Fondos: Central One + saldo de todos los revendedores ---------- */
+  if (tab === 'fondos') {
+    const f = await api('GET', '/api/admin/funds');
+    const staff = OWN ? await api('GET', '/api/admin/staff') : [];
+    let fq = '';
+    const rowsBox = el('div');
+    const drawRows = () => {
+      const q = fq.trim().toLowerCase(), list = f.resellers.filter(r => !q || r.username.toLowerCase().includes(q));
+      rowsBox.replaceChildren(list.length ? el('div', { class: 'list' }, ...list.map(r => el('div', { style: 'display:block' },
+        el('div', { style: 'display:flex;justify-content:space-between;gap:10px' },
+          el('div', { class: 'l' }, el('div', {}, r.username, ' ', r.pending ? el('span', { class: 'tag off' }, 'Pendiente') : r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'))),
+          el('div', { class: 'r' }, ...CURS.map(c => el('div', { class: r.balances[c] > 0 ? '' : 'mut', style: 'white-space:nowrap' }, money(r.balances[c], c))))),
+        can('ajustar') ? el('div', { class: 'acts' }, ...CURS.map(c => act('± ' + CUR_S[c], () => adjust(r, c), c === 'usdt' ? '' : 'sec'))) : null)))
+        : el('div', { class: 'mut' }, 'Ningún revendedor coincide.'));
+    };
+    const sq = el('input', { type: 'search', placeholder: 'Buscar revendedor…', autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
+    sq.addEventListener('input', () => { fq = sq.value; drawRows(); });
+    const P = f.provider, vend = f.totals.usdt;
+    put(out,
+      card('Saldo en Central One', P ? el('div', {}, el('div', { style: 'font-size:1.9rem;font-weight:800' }, usdt(P.available)),
+          el('div', { class: 'mut' }, (P.held != null ? 'Retenido en pedidos en curso: ' + usdt(P.held) + ' · ' : '') + (P.live ? 'en vivo' : 'último dato conocido' + (P.at ? ' (' + P.at + ' UTC)' : ''))))
+        : el('div', { class: 'mut' }, f.provider_error || 'Todavía no hay dato del saldo de Central One.'),
+        P && Number(P.available) < vend ? el('div', { class: 'msg err', style: 'margin-top:10px' }, 'Tus revendedores tienen más USDT que lo que hay en Central One: si todos compraran a la vez, no alcanzaría.') : null),
+      card('Lo que tienen tus revendedores', el('div', { class: 'stats' }, ...CURS.map(c => el('div', { class: 'stat' }, el('span', { class: 'mut' }, CUR_ICON[c] + ' ' + CUR_LONG[c]), el('b', {}, money(f.totals[c], c)), el('span', { class: 'mut' }, `${f.with_balance[c]} de ${f.count} con saldo`)))),
+        P ? el('div', { class: 'mut', style: 'margin-top:10px' }, `USDT de revendedores: ${usdt(vend)} · en Central One: ${usdt(P.available)}.`) : null),
+      card('Saldo por revendedor', el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq), rowsBox),
+      OWN ? card('Límites de tus sub-administradores', staff.length ? el('div', { class: 'list' }, ...staff.map(m => el('div', { style: 'display:block' },
+        el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
+          el('div', { class: 'mut' }, 'Aprobar saldo: ' + (m.perms.saldo ? `hasta ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP por aprobación` : 'sin permiso')),
+          el('div', { class: 'mut' }, 'Ajustar saldo a mano: ' + (m.perms.ajustar ? `hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP por ajuste` : 'sin permiso')),
+          el('div', { class: 'mut' }, 'Ver fondos: ' + (m.perms.saldos ? 'sí' : 'no') + ' · Pedidos: ' + (m.perms.pedidos ? 'sí' : 'no') + ' · Revendedores: ' + (m.perms.revendedores ? 'sí' : 'no') + ' · 2FA: ' + (m.totp ? 'activa' : 'no'))))))
+        : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.'), el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { tab = 'equipo'; adminView(); } }, 'Cambiar límites en Equipo'))) : null);
+    drawRows();
   }
 
   /* ---------- Equipo: sub-administradores ---------- */
   if (tab === 'equipo') {
     const staff = await api('GET', '/api/admin/staff');
     const PL = [['saldo', 'Aprobar saldo', 'Ve y aprueba o rechaza solicitudes de saldo, con tope por aprobación.'], ['pedidos', 'Pedidos', 'Ve los pedidos (sin costos ni ganancias) y resuelve los \"Verificando\".'],
-      ['revendedores', 'Revendedores', 'Crea cuentas, aprueba registros y activa o desactiva (sin tocar saldos, márgenes ni claves).']];
+      ['revendedores', 'Revendedores', 'Crea cuentas, aprueba registros y activa o desactiva (sin tocar márgenes ni claves).'],
+      ['ajustar', 'Ajustar saldo a mano', 'Agrega o quita saldo USDT/CUP a un revendedor, con tope por ajuste y motivo obligatorio.'],
+      ['saldos', 'Ver fondos', 'Ve el saldo de Central One y el USDT/CUP de todos los revendedores.']];
     const permEditor = p => {
       const boxes = {};
       const mk = ([k, t, h]) => { const i = el('input', { type: 'checkbox' }); i.checked = !!p[k]; boxes[k] = i; return el('label', { class: 'chk' }, i, el('span', {}, el('b', {}, t), el('small', { class: 'mut', style: 'display:block' }, h))); };
       const mu = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_usdt) }), mc = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_cup) });
+      const ma = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_adj_usdt) }), mb = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_adj_cup) });
       const node = el('div', {}, ...PL.map(mk), el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por aprobación: lo que pase de aquí solo lo aprueba el dueño.'),
-        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Máx. USDT', mu), el('label', { class: 'fld' }, 'Máx. CUP', mc)));
-      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, max_usdt: mu.value, max_cup: mc.value }) };
+        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Aprobar: máx. USDT', mu), el('label', { class: 'fld' }, 'Aprobar: máx. CUP', mc)),
+        el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por cada ajuste manual de saldo:'),
+        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Ajustar: máx. USDT', ma), el('label', { class: 'fld' }, 'Ajustar: máx. CUP', mb)));
+      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, ajustar: boxes.ajustar.checked, saldos: boxes.saldos.checked, max_usdt: mu.value, max_cup: mc.value, max_adj_usdt: ma.value, max_adj_cup: mb.value }) };
     };
     const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off' }), p: el('input', { type: 'password', placeholder: 'Contraseña (10+)', autocomplete: 'new-password' }) };
-    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, max_usdt: 50, max_cup: 20000 });
+    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, ajustar: false, saldos: true, max_usdt: 50, max_cup: 20000, max_adj_usdt: 20, max_adj_cup: 10000 });
     const nb = el('button', {}, 'Crear sub-administrador'), nm = el('div');
     nb.onclick = async () => { try { await api('POST', '/api/admin/staff', { username: nu.u.value, password: nu.p.value, perms: ed.get() }); adminView(); } catch (e) { msg(nm, e.message, 'err'); } };
     put(out,
@@ -715,15 +871,24 @@ async function adminView() {
           el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
             el('div', { class: 'mut' }, 'Último acceso: ' + (m.last_login ? m.last_login + ' UTC' + (m.last_ip ? ' · ' + m.last_ip : '') : 'nunca')),
             el('div', { class: 'chips', style: 'margin-top:6px;gap:6px' }, ...PL.filter(([k]) => m.perms[k]).map(([, t]) => el('span', { class: 'tag code' }, t)),
-              m.perms.saldo ? el('span', { class: 'tag code' }, `Tope ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP`) : null)),
+              m.perms.saldo ? el('span', { class: 'tag code' }, `Aprobar hasta ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP`) : null,
+              m.perms.ajustar ? el('span', { class: 'tag code' }, `Ajustar hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP`) : null,
+              el('span', { class: 'tag ' + (m.totp ? 'ok' : 'off') }, m.totp ? '2FA activa' : 'Sin 2FA'))),
           el('details', { class: 'regd' }, el('summary', {}, el('b', {}, 'Editar permisos'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')), pe.node,
             el('div', { class: 'acts', style: 'margin-bottom:10px' }, act('Guardar permisos', () => api('POST', '/api/admin/staff-update', { user_id: m.id, perms: pe.get() }), ''))),
           el('div', { class: 'acts' },
             act('Clave', async () => { const a = prompt('Nueva contraseña para ' + m.username + ' (10+):'); if (a) await api('POST', '/api/admin/staff-update', { user_id: m.id, password: a }); }),
+            act('Cerrar sesiones', () => api('POST', '/api/admin/staff-update', { user_id: m.id, revoke: true })),
+            m.totp ? act('Quitar 2FA', async () => { if (!confirm('¿Quitar la verificación en dos pasos de ' + m.username + '? Tendrá que activarla otra vez.')) throw new Error('Cancelado'); await api('POST', '/api/admin/staff-update', { user_id: m.id, reset_2fa: true }); }) : null,
             act(m.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/staff-update', { user_id: m.id, active: !m.active }), m.active ? 'red' : 'sec')));
       })) : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.')),
       card('Qué NO puede hacer nunca un sub-administrador', el('div', { class: 'mut' }, 'Ver costos, ganancias o reportes · tocar el catálogo, los precios o los ajustes · ajustar saldos a mano · cambiar márgenes o contraseñas de revendedores · confiar en billeteras · descargar respaldos · ver el registro o crear otros sub-admins. Si intenta algo que no puede, queda anotado como \"Negado\".')),
-      passwordCard());
+      (() => {
+        const bx = el('input', { type: 'checkbox' }); bx.checked = !!Number(st.settings.require_2fa || 0);
+        return card('Seguridad del equipo', el('label', { class: 'chk' }, bx, el('span', {}, el('b', {}, 'Exigir verificación en dos pasos a los sub-admins'), el('small', { class: 'mut', style: 'display:block' }, 'Quien no la tenga activa solo podrá entrar a "Mi cuenta" hasta activarla.'))),
+          el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { require_2fa: bx.checked ? 1 : 0 }), '')));
+      })(),
+      ...accountCards(true));
   }
 
   /* ---------- Registro de actividad ---------- */
@@ -748,7 +913,7 @@ async function adminView() {
     sq.addEventListener('input', () => { auditQ = sq.value; renderAudit(); });
     put(out, card('Registro de actividad',
       el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Quién hizo qué y cuándo: accesos, saldos, pedidos, cambios de cuentas y ajustes. Se guarda 180 días. Muestra los últimos 500 movimientos.'),
-      el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...[['all', 'Todo'], ['staff', 'Equipo'], ['reseller', 'Revendedores'], ['login', 'Accesos'], ['fail', 'Fallidos / negados']].map(([k, l]) =>
+      el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...[['all', 'Todo'], ['staff', 'Equipo'], ['reseller', 'Revendedores'], ['login', 'Accesos'], ['money', 'Saldo del equipo'], ['fail', 'Fallidos / negados']].map(([k, l]) =>
         el('button', { class: 'chip' + (auditCat === k ? ' on' : ''), onclick: () => { auditCat = k; adminView(); } }, l))),
       el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq, el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { sq.value = ''; auditQ = ''; renderAudit(); sq.focus(); } }, '✕')),
       el('div', { class: 'acts', style: 'margin:0 0 6px' }, el('button', { class: 'sec sm', onclick: () => adminView() }, '↻ Actualizar'),
@@ -759,11 +924,12 @@ async function adminView() {
 
   /* ---------- Mi cuenta (sub-admin) ---------- */
   if (tab === 'cuenta' && !OWN) {
-    const PN = { saldo: 'aprobar saldo', pedidos: 'ver pedidos', revendedores: 'gestionar revendedores' };
+    const PN = { saldo: 'aprobar saldo', saldos: 'ver fondos', ajustar: 'ajustar saldo a mano', pedidos: 'ver pedidos', revendedores: 'gestionar revendedores' };
     put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, ME.username), ' · Sub-administrador'),
       el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes: ' + (Object.keys(PN).filter(k => can(k)).map(k => PN[k]).join(', ') || 'nada por ahora') + '.'),
       can('saldo') ? el('div', { class: 'mut' }, `Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`) : null,
-      el('div', { class: 'mut' }, 'Todo lo que haces queda registrado.')), passwordCard());
+      can('ajustar') ? el('div', { class: 'mut' }, `Tu límite por ajuste manual: ${ME.perms.max_adj_usdt} USDT / ${Number(ME.perms.max_adj_cup).toLocaleString('es')} CUP (con motivo obligatorio).`) : null,
+      el('div', { class: 'mut' }, 'Todo lo que haces queda registrado.')), ...accountCards(true));
   }
 
   if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab) || (tab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) {
