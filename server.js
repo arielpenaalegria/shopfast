@@ -1384,7 +1384,8 @@ async function processEvent(ev) {
 // Si no existe ningún admin y están ADMIN_USERNAME / ADMIN_PASSWORD, se crea al arrancar.
 // Después de entrar la primera vez, borra ADMIN_PASSWORD de las variables de entorno.
 async function bootstrapAdmin() {
-  if (await C.users.findOne({ role: 'admin' }) || !process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) return;
+  if (await C.users.findOne({ role: 'admin' })) { if (process.env.ADMIN_PASSWORD) console.log('Ya existe un admin: ADMIN_PASSWORD se ignora (solo sirve en el primer arranque). Si no puedes entrar, usa RESET_PASSWORD_FOR y RESET_PASSWORD_TO (ver README).'); return; }
+  if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) return;
   if (process.env.ADMIN_PASSWORD.length < 10) return console.error('ADMIN_PASSWORD debe tener 10+ caracteres: no se creó el admin');
   try {
     await createUser(process.env.ADMIN_USERNAME, A.hashPassword(process.env.ADMIN_PASSWORD), 'admin');
@@ -1448,9 +1449,29 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+
+/** Salida de emergencia si no puedes entrar: en Render pon RESET_PASSWORD_FOR=tu_usuario y RESET_PASSWORD_TO=nueva_clave (10+ caracteres),
+ *  reinicia, entra y BORRA las dos variables. Si no existe ningún admin, lo crea con ese usuario. */
+async function envResetPassword() {
+  const raw = String(process.env.RESET_PASSWORD_FOR || '').trim(), n = raw.toLowerCase(), pw = String(process.env.RESET_PASSWORD_TO || '');
+  if (!n) return;
+  if (pw.length < 10) return console.error('RESET_PASSWORD_TO debe tener 10 o más caracteres: no se cambió nada.');
+  const u = await C.users.findOne({ username_lc: n });
+  if (!u) {
+    if (await C.users.findOne({ role: 'admin' })) return console.error('RESET_PASSWORD_FOR: no existe el usuario "' + raw + '". Revisa cómo está escrito.');
+    await createUser(raw, A.hashPassword(pw), 'admin');
+    return console.warn(`⚠ No había ningún admin: se creó "${raw}" con la clave de RESET_PASSWORD_TO. Entra y BORRA esas dos variables.`);
+  }
+  if (A.verifyPassword(pw, u.password_hash)) return console.warn('RESET_PASSWORD_*: la clave ya es esa. BORRA esas dos variables de Render.');
+  await C.users.updateOne({ _id: u._id }, { $set: { password_hash: A.hashPassword(pw), active: 1, needs_password: 0 }, $inc: { sv: 1 } });
+  console.warn(`⚠ Contraseña de "${u.username}" restablecida por RESET_PASSWORD_FOR. Entra y BORRA esas dos variables de Render.`);
+  try { await C.audit.insertOne({ _id: await nextId('audit'), at: now(), actor: 'sistema', actor_id: null, role: 'sistema', action: 'reset-password', label: 'Contraseña restablecida por RESET_PASSWORD_FOR', target: u.username, detail: {}, ok: true, status: 200, ip: null }); } catch {}
+}
+
 (async () => {
   await connect();
   await bootstrapAdmin();
+  await envResetPassword();
   await envReset2fa();
   server.listen(PORT, () => console.log(`Panel en http://localhost:${PORT}  (proveedor: ${MODE}, base: ${process.env.MONGODB_URI ? 'MongoDB' : 'MEMORIA'})`));
   setInterval(() => pollOnce().catch(e => console.error('poll', e.message)), Number(process.env.POLL_MS) || 15000);

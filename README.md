@@ -113,3 +113,8 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
   si alguno cae en el tipo equivocado, corrígelo en Catálogo → "Lo que ven tus revendedores" → botón "Tipo".
 - **Monitoreo**: la dirección `/status` responde 503 si la base de datos no contesta. Úsala en UptimeRobot o BetterStack (gratis) para que te avisen si el panel se cae.
   También te avisa por Telegram si Central One deja de responder (y cuando vuelve).
+
+## Si no puedes entrar a la cuenta principal
+`ADMIN_USERNAME` y `ADMIN_PASSWORD` solo se usan **el primer arranque** y solo si la clave tiene **10 o más caracteres**: si es más corta no se crea el admin, y si ya existía, cambiarla en Render no la cambia.
+Salida de emergencia: en Render → Environment agrega `RESET_PASSWORD_FOR` (tu usuario) y `RESET_PASSWORD_TO` (clave nueva, 10+), guarda y espera el reinicio.
+Entra con esa clave y **borra las dos variables**. Si no existía ningún admin, lo crea. Para perder el 2FA usa `RESET_2FA_FOR=tu_usuario`.
