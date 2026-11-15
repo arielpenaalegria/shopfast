@@ -39,6 +39,7 @@ const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
 const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
 const priceIn = (p, c) => p.prices ? (p.prices[c] != null ? p.prices[c] : (c === 'usdt' ? p.price : null)) : (c === 'usdt' ? p.price : null);
 let userQuery = '', ME = null, auditCat = 'all', auditQ = '';
+let hsub = 'recargas', myOrdF = { status: '', q: '', from: '', to: '' }, myLedF = { status: '', method: '', q: '', from: '', to: '' };
 let ordF = { status: '', q: '', from: '', to: '' }, reqF = { status: '', method: '', q: '', from: '', to: '' };
 const qs = o => Object.entries(o).filter(([, v]) => v !== '' && v != null).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
 const hasF = F => Object.values(F).some(v => v);
@@ -50,6 +51,16 @@ const REG = { ID: 'Indonesia', BR: 'Brasil', EU: 'Europa', LATAM: 'Latinoaméric
   JP: 'Japón', RU: 'Rusia', TR: 'Turquía', SA: 'Arabia Saudita', GLOBAL: '' };
 const regName = v => REG[String(v).toUpperCase()] ?? '';
 const regLabel = v => regName(v) ? `${regName(v)} (${v})` : v;
+const PTYPES = [['diamantes', 'Diamantes'], ['pases', 'Pases'], ['membresias', 'Membresías'], ['otros', 'Otros']];
+/** Tipo de oferta por el nombre del paquete (el dueño puede corregirlo en Catálogo → "Tipo"). */
+const autoType = n => {
+  const t = shortName(n).toLowerCase();
+  if (/membres|membership|suscrip|subscri|semanal|mensual|weekly|monthly|\bvip\b/.test(t)) return 'membresias';
+  if (/\bpase|\bpass\b|booyah|level ?up|evo ?access|battle ?pass/.test(t)) return 'pases';
+  if (/diamant|diamond|gema|\bgems?\b|cristal|crystal|\buc\b|\bcp\b|\bvp\b|moneda|coin|cr[eé]dito|credit|robux|\boro\b|gold|token|bono|bonus/.test(t)) return 'diamantes';
+  return 'otros';
+};
+const typeOf = p => p.ptype || autoType(p.name);
 const shortName = n => { const i = n.indexOf(' · '); return i > 0 ? n.slice(i + 3) : n; }; // "Free Fire (BR) · 100 Diamantes" -> "100 Diamantes"
 const regionCard = (code, sub, onclick) => el('button', { class: 'reg', onclick },
   el('span', { class: 'code' }, code), el('span', { class: 'rn' }, regName(code) ? el('b', {}, regName(code)) : null, el('span', { class: 'mut' }, sub)),
@@ -154,6 +165,33 @@ $('lb').onclick = async () => {
 lc.addEventListener('keydown', e => e.key === 'Enter' && $('lb').click());
 $('lp').addEventListener('keydown', e => e.key === 'Enter' && $('lb').click());
 $('lu').placeholder = 'Correo o usuario';
+// ¿Olvidaste tu contraseña? (revendedores: código por Telegram, o aviso al administrador)
+{
+  const fu = el('input', { placeholder: 'Tu correo o usuario', autocomplete: 'username' });
+  const fc = el('input', { placeholder: 'Código de 6 dígitos', inputmode: 'numeric', autocomplete: 'one-time-code', class: 'hidden' });
+  const f1 = el('input', { type: 'password', placeholder: 'Nueva contraseña (8 o más)', autocomplete: 'new-password', class: 'hidden' });
+  const f2 = el('input', { type: 'password', placeholder: 'Repite la nueva contraseña', autocomplete: 'new-password', class: 'hidden' });
+  const fm = el('div'), fb = el('button', {}, 'Enviarme el código');
+  let step = 1;
+  const form = el('div', { class: 'hidden', style: 'margin-top:14px;text-align:left' }, el('h2', {}, 'Recuperar contraseña'),
+    el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Si tu cuenta tiene Telegram conectado, te mandamos un código por ahí. Si no, avisamos al administrador para que te la cambie.'), fu, fc, f1, f2, fb, fm);
+  fb.onclick = async () => {
+    fb.disabled = true;
+    try {
+      if (step === 1) {
+        const d = await api('POST', '/api/forgot', { username: fu.value });
+        msg(fm, d.message, 'ok'); step = 2; for (const x of [fc, f1, f2]) x.classList.remove('hidden'); fb.textContent = 'Cambiar contraseña';
+      } else {
+        if (f1.value !== f2.value) throw new Error('Las contraseñas no coinciden');
+        await api('POST', '/api/reset-password', { username: fu.value, code: fc.value, password: f1.value });
+        $('lu').value = fu.value; fc.value = f1.value = f2.value = ''; step = 1; for (const x of [fc, f1, f2]) x.classList.add('hidden'); fb.textContent = 'Enviarme el código';
+        form.classList.add('hidden'); fm.replaceChildren(); msg($('lm'), 'Listo: ya puedes entrar con tu nueva contraseña.', 'ok'); $('lp').focus();
+      }
+    } catch (e) { msg(fm, e.message, 'err'); }
+    fb.disabled = false;
+  };
+  $('login').append(el('button', { class: 'ghost', style: 'margin-top:12px', onclick: () => form.classList.toggle('hidden') }, '¿Olvidaste tu contraseña?'), form);
+}
 // Registro de revendedores (si el admin lo tiene abierto)
 api('GET', '/api/public-config').then(cfg => {
   if (cfg.registration === 'off') return;
@@ -319,10 +357,14 @@ async function resellerView() {
     if (vars.size > 1) put(buy, el('div', { class: 'row', style: 'margin-top:10px;align-items:center' },
       el('span', { class: 'code' }, pick.variant), el('b', {}, regName(pick.variant) || pick.variant),
       el('button', { class: 'ghost', onclick: () => { pick.variant = null; pick.product = null; renderBuy(); } }, '← Cambiar región')));
-    const list = (vars.get(pick.variant) || []).slice().sort((a, b) => priceIn(a, payCur) - priceIn(b, payCur));
+    const all = (vars.get(pick.variant) || []).slice().sort((a, b) => priceIn(a, payCur) - priceIn(b, payCur));
+    const byType = groupBy(all, typeOf), types = PTYPES.filter(([k]) => byType.has(k));
+    if (!types.some(([k]) => k === pick.ptype)) pick.ptype = types.length ? types[0][0] : null;
+    const list = byType.get(pick.ptype) || [];
     if (!list.some(p => p.id === pick.product)) pick.product = null;
     const n = vars.size > 1 ? 3 : 2;
     put(buy, el('h3', {}, n + '. Elige el paquete'),
+      types.length > 1 ? el('div', { class: 'chips', style: 'margin-bottom:10px' }, ...types.map(([k, l]) => el('button', { class: 'chip' + (k === pick.ptype ? ' on' : ''), onclick: () => { pick.ptype = k; pick.product = null; renderBuy(); } }, `${l} (${byType.get(k).length})`))) : null,
       el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
         shortName(p.name), el('b', {}, money(priceIn(p, payCur), payCur))))));
     const p = list.find(x => x.id === pick.product);
@@ -401,6 +443,7 @@ async function resellerView() {
 
   // --- "Pedir saldo": 3 métodos (USDT BEP20 / Transferencia / Saldo móvil). Solo se muestran los que el admin configuró. ---
   const methods = [['usdt', '💲 USDT', !!dep.wallet], ['transfer', '🏦 Transferencia', !!dep.payment_transfer], ['mobile', '📱 Saldo móvil', !!dep.payment_mobile]].filter(m => m[2]);
+  const susp = dep.suspended || {};
   let depMethod = 'usdt'; try { depMethod = sessionStorage.getItem('depM') || 'usdt'; } catch {}
   if (!methods.some(m => m[0] === depMethod)) depMethod = methods.length ? methods[0][0] : null;
   /** Construye el formulario de depósito según el método elegido. */
@@ -471,6 +514,7 @@ async function resellerView() {
 
   const tabs = [['recargar', 'Recargar'], ['historial', 'Mis recargas'], ['saldo', 'Pedir saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', 'Cuenta']];
   put(out, 
+    me.maintenance ? el('div', { class: 'msg err', style: 'margin:0 0 12px;white-space:pre-wrap' }, '🛠 ' + me.maintenance.msg) : null,
     me.announcement ? el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement) : null,
     el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mis saldos'),
       el('div', { class: 'bals' }, ...CURS.map(c => el('div', {}, el('span', {}, CUR_ICON[c] + ' ' + CUR_LONG[c]),
@@ -478,32 +522,50 @@ async function resellerView() {
       el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo'))),
     el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
 
-  if (rtab === 'recargar') {
+  if (rtab === 'recargar' && me.maintenance) put(out, card('Recargas en pausa', el('div', { class: 'mut' }, 'Mientras dure el mantenimiento no se pueden enviar recargas. Tus saldos están seguros y puedes seguir pidiendo saldo.')));
+  else if (rtab === 'recargar') {
     renderBuy();
     put(out, card('Nueva recarga', buy, box, el('div', { class: 'mut', style: 'margin-top:10px' }, 'Una recarga puede tardar desde minutos hasta un par de horas. No la repitas mientras esté "En proceso": podría llegar dos veces.')));
   }
   if (rtab === 'historial') {
-    put(out, box, card('Mis recargas', orders.length ? el('div', { class: 'list' }, ...orders.map(o => el('div', {},
+    const isO = hsub === 'recargas', F = isO ? myOrdF : myLedF, base = isO ? '/api/orders' : '/api/ledger';
+    const LT = { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' };
+    const listBox = el('div'), cnt = el('div', { class: 'mut', style: 'margin:6px 0' });
+    const csv = el('a', { href: base + '.csv?' + qs(F), download: '' }, el('button', { class: 'sec sm' }, '⬇ Descargar CSV'));
+    const rowO = o => el('div', {},
       el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null,
         byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null),
-      el('div', { class: 'r' }, el('div', {}, money(o.price, o.currency)), tag(o.status))))) : el('div', { class: 'mut' }, 'Todavía no has hecho recargas.')));
+      el('div', { class: 'r' }, el('div', {}, money(o.price, o.currency)), tag(o.status)));
+    const rowL = l => el('div', {},
+      el('div', { class: 'l' }, el('div', {}, LT[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
+      el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + money(l.amount, l.currency)));
+    const draw = list => {
+      cnt.textContent = `${list.length} ${isO ? 'recarga' : 'movimiento'}${list.length === 1 ? '' : 's'}` + (list.length >= 100 ? ' (los más recientes: afina el filtro para ver otros)' : '');
+      listBox.replaceChildren(list.length ? el('div', { class: 'list' }, ...list.map(isO ? rowO : rowL)) : el('div', { class: 'mut' }, hasF(F) ? 'Nada coincide con ese filtro.' : (isO ? 'Todavía no has hecho recargas.' : 'Sin movimientos.')));
+      csv.href = base + '.csv?' + qs(F);
+    };
+    const reload = async () => { listBox.replaceChildren(el('div', { class: 'mut' }, 'Buscando…')); try { draw(await api('GET', base + '?' + qs({ ...F, limit: 100 }))); } catch (e) { msg(listBox, e.message, 'err'); } };
+    put(out, box,
+      el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...[['recargas', 'Mis recargas'], ['mov', 'Movimientos de saldo']].map(([k, l]) => el('button', { class: 'chip' + (hsub === k ? ' on' : ''), onclick: () => { hsub = k; resellerView(); } }, l))),
+      card(isO ? 'Mis recargas' : 'Movimientos de saldo',
+        filterBar(F, isO ? [['', 'Todas'], ['completed', 'Completadas'], ['active', 'En proceso'], ['unknown', 'Verificando'], ['failed', 'Fallidas']]
+          : [['', 'Todos'], ['topup', 'Recargas de saldo'], ['order', 'Compras'], ['refund', 'Reembolsos'], ['adjust', 'Ajustes']], reload, isO ? null : [['', 'Todas las monedas'], ['usdt', 'USDT'], ['transfer', 'CUP transf.'], ['mobile', 'CUP saldo']]),
+        cnt, listBox, el('div', { class: 'acts' }, csv)));
+    if (hasF(F)) reload(); else draw(isO ? orders : led);
   }
   if (rtab === 'saldo') {
     // Sub-pestañas: 3 métodos de depósito
     put(out, box,
       methods.length > 1 ? el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...methods.map(([k, l]) =>
-        el('button', { class: 'chip' + (depMethod === k ? ' on' : ''), onclick: () => { depMethod = k; try { sessionStorage.setItem('depM', k); } catch {} resellerView(); } }, l))) : null,
-      methods.length ? depositForm(depMethod) : card('Pedir saldo', el('div', { class: 'mut' }, 'El administrador todavía no configuró ninguna forma de pago. Escríbele para recargar saldo.')),
+        el('button', { class: 'chip' + (depMethod === k ? ' on' : ''), onclick: () => { depMethod = k; try { sessionStorage.setItem('depM', k); } catch {} resellerView(); } }, l + (susp[k] ? ' ⏸' : '')))) : null,
+      methods.length ? (susp[depMethod] ? card('Pagos en pausa', el('div', { class: 'msg warn' }, 'Los pagos por ' + METHOD_L[depMethod] + ' están suspendidos por ahora. Usa otro método o inténtalo más tarde.')) : depositForm(depMethod)) : card('Pedir saldo', el('div', { class: 'mut' }, 'El administrador todavía no configuró ninguna forma de pago. Escríbele para recargar saldo.')),
       card('Mis solicitudes', reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => el('div', {},
         el('div', { class: 'l' }, el('div', {}, `#${r.id} · ${METHOD_L[r.method] || 'USDT'}`),
           el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.note ? ' · ' + r.note : '')),
           r.status === 'pending' && r.verify === 'wait' ? el('div', { class: 'mut' }, '⏳ ' + (r.verify_msg || 'Confirmando en BSC…')) : null,
           r.status === 'pending' && r.verify !== 'wait' ? el('div', { class: 'mut' }, 'En revisión por el administrador') : null,
           r.admin_note ? el('div', { class: 'mut' }, r.admin_note) : null),
-        el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')),
-      card('Movimientos de saldo', led.length ? el('div', { class: 'list' }, ...led.map(l => el('div', {},
-        el('div', { class: 'l' }, el('div', {}, { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' }[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
-        el('div', { class: 'r', style: 'font-weight:700;color:' + (l.amount < 0 ? 'var(--err)' : 'var(--ok)') }, (l.amount > 0 ? '+' : '') + money(l.amount, l.currency))))) : el('div', { class: 'mut' }, 'Sin movimientos.')));
+        el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')));
   }
   if (rtab === 'cuenta') {
     put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
@@ -547,6 +609,16 @@ async function adminView() {
     : [can('saldo') && tSaldo, can('saldos') && tFondos, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
   if (!tabs.some(t => t[0] === tab)) { tab = tabs[0][0]; if (tab === 'cuenta' && can('saldo')) tab = 'saldo'; }
   put(out, el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
+  if (OWN) {
+    const days = Number(st.settings.rate_stale_days || 0), ru = st.rates_updated ? (Date.now() - new Date(st.rates_updated).getTime()) / 864e5 : 0;
+    const bn = (c, t) => put(out, el('div', { class: 'msg ' + c, style: 'margin-bottom:12px' }, t));
+    if (st.provider_down) bn('err', 'Central One no está respondiendo ahora mismo. Si dura, activa el Modo mantenimiento en Resumen.');
+    if (Number(st.settings.maintenance)) bn('warn', '🛠 Modo mantenimiento ACTIVO: tus revendedores no pueden enviar recargas. Desactívalo en Resumen.');
+    if (days && ru > days && (Number(st.settings.rate_transfer) > 0 || Number(st.settings.rate_mobile) > 0)) bn('warn', `Tus tasas CUP llevan ${Math.floor(ru)} días sin actualizarse. Revísalas en Resumen.`);
+    if (st.db_mode === 'memory') bn('err', 'La base de datos está en MEMORIA: todo se borra al reiniciar. Configura MONGODB_URI en Render.');
+    const bl = st.backup_last ? (Date.now() - new Date(st.backup_last).getTime()) / 864e5 : null;
+    if (Number(st.settings.auto_backup) && bl !== null && bl > 8) bn('warn', `Hace ${Math.floor(bl)} días que no se envía un respaldo a tu Telegram. Revisa que tu cuenta esté conectada.`);
+  }
   if (st.balance_low) put(out, el('div', { class: 'msg err', style: 'margin-bottom:12px' }, 'Tu saldo en Central One está bajo o no alcanzó para un pedido. Recarga para no rechazar pedidos.'));
 
   if (tab === 'resumen') {
@@ -577,10 +649,13 @@ async function adminView() {
         el('div', { class: 'row' }, th, act('Guardar', () => api('POST', '/api/admin/settings', { low_balance_threshold: th.value.replace(',', '.') || 0 }), ''))),
       (() => {
         const S = st.settings, rt = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_transfer || '', placeholder: 'Ej. 400' }),
-          rm = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_mobile || '', placeholder: 'Ej. 300' });
+          rm = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_mobile || '', placeholder: 'Ej. 300' }), rd = el('input', { type: 'number', min: '0', max: '60', value: String(S.rate_stale_days ?? 3) });
         return card('Tasas CUP (para precios)', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'CUP por cada 1 USDT. Solo sirven para calcular el precio en CUP de cada paquete (precio USDT × tasa). Los saldos CUP de tus revendedores no se convierten. 0 = no se puede pagar con ese saldo.'),
           el('div', { class: 'mut' }, 'Tasa transferencia bancaria'), el('div', { class: 'row' }, rt, act('Guardar transferencia', () => api('POST', '/api/admin/settings', { rate_transfer: rt.value || 0 }), '')),
-          el('div', { class: 'mut' }, 'Tasa saldo móvil'), el('div', { class: 'row' }, rm, act('Guardar saldo móvil', () => api('POST', '/api/admin/settings', { rate_mobile: rm.value || 0 }), '')));
+          el('div', { class: 'mut' }, 'Tasa saldo móvil'), el('div', { class: 'row' }, rm, act('Guardar saldo móvil', () => api('POST', '/api/admin/settings', { rate_mobile: rm.value || 0 }), '')),
+          el('div', { class: 'mut', style: 'margin-top:10px' }, 'Última actualización: ' + (st.rates_updated ? new Date(st.rates_updated).toLocaleString('es') : 'sin registro todavía')),
+          el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Avisarme si pasan N días sin actualizar (0 = no avisar)', rd), act('Guardar aviso', () => api('POST', '/api/admin/settings', { rate_stale_days: rd.value || 0 }), '')),
+          el('div', { class: 'acts' }, act('✔ Siguen vigentes', () => api('POST', '/api/admin/rates-confirm', {}), 'sec')));
       })(),
       (() => {
         const S = st.settings, mode = el('select', {}, ...[['approval', 'Abierto, con mi aprobación'], ['open', 'Abierto, sin aprobación'], ['off', 'Cerrado (solo yo creo cuentas)']]
@@ -606,6 +681,63 @@ async function adminView() {
           el('label', { class: 'chk', style: 'margin-top:10px' }, bkAuto, el('span', {}, el('b', {}, 'Respaldo automático semanal'))),
           el('div', { class: 'acts' }, bkNow, el('a', { href: '/api/admin/backup', download: '' }, el('button', { class: 'sec sm' }, '⬇ Descargar completo (con claves)'))), bkBox);
       })(),
+      (() => {
+        const on = el('input', { type: 'checkbox' }); on.checked = !!Number(st.settings.maintenance);
+        const mt = el('textarea', { rows: '2', placeholder: 'Mensaje para tus revendedores (opcional)', style: 'width:100%' }); mt.value = st.settings.maintenance_msg || '';
+        return card('Modo mantenimiento', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Pausa las recargas (no se pueden enviar pedidos) cuando Central One falle o vayas a cambiar precios. Tus revendedores siguen viendo sus saldos y pueden pedir saldo.'),
+          el('label', { class: 'chk' }, on, el('span', {}, el('b', {}, 'Pausar recargas ahora'))), mt,
+          el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { maintenance: on.checked ? 1 : 0, maintenance_msg: mt.value }), '')));
+      })(),
+      (() => {
+        let data = null;
+        const box = el('div'), area = el('div'), file = el('input', { type: 'file', accept: '.json,.gz,application/json,application/gzip' });
+        const NAMES = { users: 'cuentas', products: 'productos', wallets: 'billeteras', orders: 'pedidos', ledger: 'movimientos de saldo', topup_requests: 'solicitudes de saldo', kv: 'ajustes', audit: 'registro de actividad' };
+        const plan = d => {
+          const mode = el('select', {}, el('option', { value: 'missing' }, 'Solo reponer lo que falte (recomendado)'), el('option', { value: 'overwrite' }, 'Sobrescribir con lo del respaldo (vuelve atrás en el tiempo)'));
+          const pw = el('input', { type: 'password', placeholder: 'Tu contraseña', autocomplete: 'current-password' });
+          const cd = ME.totp ? el('input', { placeholder: 'Código de tu app de autenticación', inputmode: 'numeric', autocomplete: 'one-time-code' }) : null;
+          const cf = el('input', { placeholder: 'Escribe RESTAURAR para confirmar', autocomplete: 'off' });
+          const go = el('button', { class: 'red' }, 'Restaurar ahora');
+          const run = async force => {
+            go.disabled = true;
+            try {
+              const r = await api('POST', '/api/admin/restore', { data, mode: mode.value, password: pw.value, code: cd ? cd.value : '', confirm: cf.value, force });
+              area.replaceChildren(el('div', { class: 'msg ok' }, '✓ Restauración terminada.'), el('div', { class: 'list' }, ...Object.entries(r.report).map(([k, v]) => el('div', {}, el('div', { class: 'l' }, NAMES[k] || k), el('div', { class: 'r mut' }, `${v.in_backup} en el respaldo · ${v.added} añadidos` + (v.errors ? ` · ${v.errors} con error` : ''))))),
+                el('div', { class: 'mut', style: 'margin-top:8px' }, 'Recarga la página para ver los datos. Si el respaldo no traía contraseñas, las cuentas repuestas quedaron con la clave bloqueada: cámbiasela a cada una en Revendedores → Clave.'));
+              data = null; file.value = '';
+            } catch (e) {
+              if (/Continuar sin ella/.test(e.message) && confirm(e.message)) return run(true);
+              msg(box, e.message, 'err');
+            }
+            go.disabled = false;
+          };
+          go.onclick = () => run(false);
+          area.replaceChildren(el('div', { class: 'msg ok' }, 'Respaldo leído' + (d.exported_at ? ' · generado ' + new Date(d.exported_at).toLocaleString('es') : '') + '.'),
+            el('div', { class: 'list' }, ...Object.entries(d.counts).map(([k, n]) => el('div', {}, el('div', { class: 'l' }, NAMES[k] || k), el('div', { class: 'r' }, String(n))))),
+            d.stripped ? el('div', { class: 'msg warn', style: 'margin-top:8px' }, 'Este respaldo no trae contraseñas (es el de Telegram). Las cuentas que no existan quedarán con la clave bloqueada hasta que se la cambies. Tu cuenta no se toca.') : null,
+            el('div', { class: 'mut', style: 'margin:10px 0 4px' }, 'Antes de restaurar te mando una copia del estado actual a Telegram. Esta acción nunca borra datos.'),
+            el('div', { class: 'row' }, mode), el('div', { class: 'row' }, pw), cd ? el('div', { class: 'row' }, cd) : null, el('div', { class: 'row' }, cf), el('div', { class: 'acts' }, go));
+        };
+        file.onchange = async () => {
+          area.replaceChildren(); box.replaceChildren(); data = null;
+          const f = file.files[0]; if (!f) return;
+          try {
+            let text;
+            if (/\.gz$/i.test(f.name)) { if (typeof DecompressionStream === 'undefined') throw new Error('Tu navegador no puede abrir .gz: descomprímelo y sube el .json.'); text = await new Response(f.stream().pipeThrough(new DecompressionStream('gzip'))).text(); }
+            else text = await f.text();
+            data = JSON.parse(text);
+            plan(await api('POST', '/api/admin/restore', { data, dry_run: true }));
+          } catch (e) { data = null; msg(box, e.message || 'No se pudo leer el archivo', 'err'); }
+        };
+        return card('Restaurar un respaldo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Sube el archivo de respaldo (el .json que descargas o el .json.gz que te llega a Telegram) si perdiste datos. Primero verás qué trae, sin cambiar nada.'), el('div', { class: 'row' }, file), area, box);
+      })(),
+      card('Monitoreo y copias',
+        el('div', { class: st.db_mode === 'memory' ? 'msg err' : 'mut' }, 'Base de datos: ' + (st.db_mode === 'memory' ? 'MEMORIA (¡se borra al reiniciar!)' : 'MongoDB ✓')),
+        el('div', { class: 'mut' }, 'Último respaldo a Telegram: ' + (st.backup_last ? new Date(st.backup_last).toLocaleString('es') : 'todavía no')),
+        el('div', { class: 'mut', style: 'margin-top:10px' }, 'Para que te avisen si el panel se cae: crea una cuenta gratis en UptimeRobot o BetterStack, agrega un monitor HTTP con esta dirección (revisa cada 5 min) y pon tu correo o Telegram como alerta. De paso, en Render gratis evita que el servicio se duerma:'),
+        el('div', { class: 'addr' }, location.origin + '/status'),
+        el('div', { class: 'mut' }, 'Responde error 503 si la base de datos no contesta. Ojo: el MongoDB Atlas gratis NO hace copias automáticas; tu copia real es el respaldo semanal de Telegram. Pruébalo restaurándolo alguna vez.'),
+        el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { try { navigator.clipboard.writeText(location.origin + '/status'); alert('Dirección copiada'); } catch { alert(location.origin + '/status'); } } }, 'Copiar dirección'))),
       card('Estado', el('div', { class: 'mut' }, 'Catálogo actualizado: ' + (st.catalog_synced_at ? st.catalog_synced_at + ' UTC' : 'todavía no')),
         el('div', { class: 'mut' }, 'Productos activos: ' + prods.filter(p => p.active).length + ' · Revendedores: ' + users.length),
         el('div', { class: 'mut' }, 'Webhooks: ' + (st.webhooks ? 'activos' + (st.webhook_test_at ? ' · última prueba ' + st.webhook_test_at + ' UTC' : '') : 'sin configurar (se usa consulta periódica)')),
@@ -669,6 +801,12 @@ async function adminView() {
     const reloadReqs = async () => { reqBox.replaceChildren(el('div', { class: 'mut' }, 'Buscando…')); try { drawReqs(await api('GET', '/api/admin/topup-requests?' + qs({ ...reqF, limit: 200 }))); } catch (e) { msg(reqBox, e.message, 'err'); } };
     const reqFilters = filterBar(reqF, [['', 'Todas'], ['pending', 'Pendientes'], ['approved', 'Aprobadas'], ['rejected', 'Rechazadas']], reloadReqs, [['', 'Todos los métodos'], ['usdt', 'USDT'], ['transfer', 'Transferencia'], ['mobile', 'Saldo móvil']]);
     put(out, 
+      OWN && (() => {
+        const S = st.settings, rows = [['usdt', '💲 USDT BEP20'], ['transfer', '🏦 Transferencia'], ['mobile', '📱 Saldo móvil']];
+        return card('Pagos por método', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Suspende un método cuando no puedas atender pagos (por ejemplo, saldo móvil sin cobertura). Tus revendedores verán que está en pausa y no podrán pedir saldo por ahí. Sus saldos y las solicitudes ya enviadas no cambian.'),
+          el('div', { class: 'list' }, ...rows.map(([k, l]) => { const off = !!Number(S['pay_off_' + k]); return el('div', {}, el('div', { class: 'l' }, el('b', {}, l), ' ', off ? el('span', { class: 'tag off' }, 'Suspendido') : el('span', { class: 'tag ok' }, 'Activo')),
+            el('div', { class: 'r' }, act(off ? 'Reanudar' : 'Suspender', () => api('POST', '/api/admin/settings', { ['pay_off_' + k]: off ? 0 : 1 }), off ? '' : 'red'))); })));
+      })(),
       OWN && card('USDT BEP20', dep.wallet
         ? el('div', {}, el('div', { class: 'mut' }, 'Billetera que ven tus revendedores:'), el('div', { class: 'addr' }, dep.wallet),
           el('div', { class: 'mut', style: 'margin-top:6px' }, dep.auto ? `Verificación automática activa (${dep.min_confirmations} confirmaciones).` : 'Verificación automática desactivada: falta BSC_RPC_URL en Render.'))
@@ -743,7 +881,7 @@ async function adminView() {
     put(out, card('Lo que ven tus revendedores', mine.size ? el('div', {}, ...[...mine].map(([f, ps]) => el('div', {}, el('h3', {}, f),
       el('div', { class: 'list' }, ...ps.map(p => el('div', {},
         el('div', { class: 'l' }, el('div', {}, p.name), el('div', { class: 'mut' }, p.cost === null ? 'fuera del catálogo' : 'Costo US$ ' + p.cost + (p.in_stock ? '' : ' · agotado'))),
-        el('div', { class: 'r' }, act('Renombrar', async () => { const a = prompt('Nombre que verán tus revendedores:', p.name); if (a) await api('POST', '/api/admin/product-update', { id: p.id, name: a }); }))))))))
+        el('div', { class: 'r' }, act('Tipo: ' + PTYPES.find(([k]) => k === typeOf(p))[1], async () => { const a = prompt('Tipo de oferta: diamantes, pases, membresias u otros.\nDéjalo vacío para que se detecte solo por el nombre:', p.ptype || ''); if (a === null) throw new Error('Cancelado'); await api('POST', '/api/admin/product-update', { id: p.id, ptype: a.trim().toLowerCase() }); }), act('Renombrar', async () => { const a = prompt('Nombre que verán tus revendedores:', p.name); if (a) await api('POST', '/api/admin/product-update', { id: p.id, name: a }); }))))))))
       : el('div', { class: 'mut' }, 'Todavía no vendes nada. Abre un juego arriba y pulsa "Vender todos por ID".')));
   }
 
