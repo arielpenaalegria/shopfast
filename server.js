@@ -85,6 +85,8 @@ const SETTINGS = {
   registration: { def: 'approval', check: v => ['off', 'approval', 'open'].includes(v), cast: String },
   default_markup: { def: 10, check: v => Number(v) >= 0 && Number(v) <= 100, cast: Number },
   announcement: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },
+  require_2fa: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // exigir 2FA a sub-admins
+  auto_backup: { def: 1, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // respaldo semanal a Telegram
 };
 async function getSettings() {
   const out = {};
@@ -97,26 +99,37 @@ async function getSettings() {
 // El sub-admin solo entra a lo que el dueño le active. Nunca ve costos, ganancias, catálogo, ajustes, respaldo ni billeteras.
 const STAFF_PERM = {
   'GET /api/admin/users': 'revendedores', 'POST /api/admin/users': 'revendedores', 'POST /api/admin/user-update': 'revendedores', 'POST /api/admin/user-delete': 'revendedores',
-  'GET /api/admin/orders': 'pedidos', 'POST /api/admin/resolve': 'pedidos', 'POST /api/admin/retry': 'pedidos',
+  'GET /api/admin/orders': 'pedidos', 'POST /api/admin/balance': 'ajustar', 'GET /api/admin/funds': 'saldos', 'POST /api/admin/resolve': 'pedidos', 'POST /api/admin/retry': 'pedidos',
   'GET /api/admin/topup-requests': 'saldo', 'GET /api/admin/topup-image': 'saldo', 'POST /api/admin/topup-recheck': 'saldo', 'POST /api/admin/topup-decide': 'saldo',
 };
 function normPerms(p = {}) {
   const n = (v, d, max) => { const x = Number(v); return Number.isFinite(x) && x >= 0 ? Math.min(x, max) : d; };
-  return { revendedores: !!p.revendedores, saldo: !!p.saldo, pedidos: !!p.pedidos, max_usdt: n(p.max_usdt, 50, 100000), max_cup: n(p.max_cup, 20000, 10000000) };
+  return { revendedores: !!p.revendedores, saldo: !!p.saldo, pedidos: !!p.pedidos, ajustar: !!p.ajustar, saldos: p.saldos === undefined ? true : !!p.saldos,
+    max_usdt: n(p.max_usdt, 50, 100000), max_cup: n(p.max_cup, 20000, 10000000), max_adj_usdt: n(p.max_adj_usdt, 20, 100000), max_adj_cup: n(p.max_adj_cup, 10000, 10000000) };
 }
 const AUDIT_LABEL = {
   '/api/login': 'Inicio de sesión', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
   '/api/orders': 'Recarga enviada', '/api/topup-requests': 'Solicitud de saldo enviada', '/api/validate': 'ID verificado',
-  '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/user-delete': 'Cuenta borrada',
+  '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/funds': 'Fondos consultados', '/api/admin/user-delete': 'Cuenta borrada',
   '/api/admin/user-update': 'Cuenta modificada', '/api/admin/family': 'Juego/región activado o quitado', '/api/admin/products': 'Paquete activado',
   '/api/admin/product-update': 'Paquete modificado', '/api/admin/resolve': 'Pedido resuelto a mano', '/api/admin/retry': 'Pedido reintentado',
   '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/wallet-remove': 'Billetera de confianza quitada',
   '/api/admin/settings': 'Ajustes cambiados', '/api/admin/catalog-sync': 'Catálogo actualizado', '/api/admin/webhook-test': 'Aviso de prueba enviado',
+  '/api/2fa/start': 'Activación de 2FA iniciada', '/api/2fa/confirm': '2FA activada', '/api/2fa/disable': '2FA desactivada', '/api/logout-all': 'Sesiones cerradas en todos los dispositivos',
+  '/api/admin/backup-send': 'Respaldo enviado a Telegram',
   '/api/admin/staff': 'Sub-admin creado', '/api/admin/staff-update': 'Sub-admin modificado', '/api/admin/backup': 'Respaldo descargado', '/api/admin/audit.csv': 'Registro descargado (CSV)',
 };
 const AUDIT_SKIP = new Set(['/api/logout', '/api/validate', '/api/telegram-link', '/api/telegram-unlink']);
 const AUDIT_GET = new Set(['/api/admin/backup', '/api/admin/audit.csv']);
-const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username'];
+const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'reset_2fa', 'revoke'];
+const PWD_PATHS = new Set(['/api/change-password', '/api/admin/users', '/api/admin/user-update', '/api/admin/staff', '/api/admin/staff-update']);
+const GATE_OK = new Set(['/api/me', '/api/me-extra', '/api/2fa/start', '/api/2fa/confirm', '/api/logout', '/api/logout-all', '/api/change-password']);
+function dateRange(from, to) {
+  const ok = x => /^\d{4}-\d{2}-\d{2}$/.test(x || ''), r = {};
+  if (ok(from)) r.$gte = new Date(from + 'T00:00:00Z');
+  if (ok(to)) r.$lte = new Date(to + 'T23:59:59.999Z');
+  return Object.keys(r).length ? r : null;
+}
 /** Nombre legible de sobre quién/qué se hizo la acción. Se calcula ANTES de ejecutarla (si borra la cuenta, luego ya no existe). */
 async function auditTarget(path, b) {
   try {
@@ -131,22 +144,23 @@ async function audit(req, user, path, body, status, target, res) {
     const b = body || {}, d = {};
     if (path === '/api/admin/settings') { for (const [k, v] of Object.entries(b)) d[k] = String(v).slice(0, 80); }
     else for (const k of AUDIT_KEYS) if (b[k] !== undefined && b[k] !== null && b[k] !== '') d[k] = String(b[k]).slice(0, 120);
-    if ((b.password || b.new_password) && path !== '/api/login' && path !== '/api/register') d.contraseña = '(definida)';
+    if ((b.password || b.new_password) && PWD_PATHS.has(path)) d.contraseña = '(definida)';
     if (b.perms) d.permisos = JSON.stringify(b.perms).slice(0, 200);
     if (b.tx_hash) d.hash = String(b.tx_hash).slice(0, 14) + '…';
     const a = (res && res.audit) || {};
     const loginName = path === '/api/login' || path === '/api/register' ? String(b.username || b.email || '').slice(0, 80) : '';
     await C.audit.insertOne({ _id: await nextId('audit'), at: now(), actor: a.actor || (user && user.username) || loginName || '?', actor_id: user ? user.id : null,
-      role: a.role || (user && user.role) || 'visitante', action: path.replace(/^\/api\//, ''), label: AUDIT_LABEL[path] || (status === 403 ? 'Intento no permitido (' + path.replace(/^\/api\//, '') + ')' : path.replace(/^\/api\//, '')),
+      role: a.role || (user && user.role) || 'visitante', action: path.replace(/^\/api\//, ''), label: a.label || AUDIT_LABEL[path] || (status === 403 ? 'Intento no permitido (' + path.replace(/^\/api\//, '') + ')' : path.replace(/^\/api\//, '')),
       target: target || null, detail: d, ok: status < 400, status, ip: A.clientIp(req) });
   } catch (e) { console.error('audit', e.message); }
 }
+const isTeamMoney = r => r.role === 'subadmin' && r.ok && (r.action === 'admin/balance' || (r.action === 'admin/topup-decide' && String((r.detail || {}).approve) === 'true'));
 const auditCat = r => r.action === 'login' ? 'login' : (r.role === 'admin' || r.role === 'subadmin') ? 'staff' : 'reseller';
 const auditOut = r => ({ id: r._id, at: fmt(r.at), actor: r.actor, role: r.role, label: r.label, action: r.action, target: r.target, detail: r.detail || {}, ok: r.ok, status: r.status, ip: r.ip, cat: auditCat(r) });
 async function auditRows(sp, max) {
   const cat = sp.get('cat') || 'all', q = (sp.get('q') || '').trim().toLowerCase();
   const rows = (await C.audit.find({}).sort({ _id: -1 }).limit(5000).toArray()).map(auditOut)
-    .filter(r => (cat === 'all' || r.cat === cat || (cat === 'fail' && !r.ok))
+    .filter(r => (cat === 'all' || r.cat === cat || (cat === 'fail' && !r.ok) || (cat === 'money' && isTeamMoney(r)))
       && (!q || [r.actor, r.label, r.target, r.ip, JSON.stringify(r.detail)].join(' ').toLowerCase().includes(q)));
   return rows.slice(0, max);
 }
@@ -165,16 +179,24 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
     return send(res, 401, { error: 'Usuario o contraseña incorrectos' });
   }
   if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
-  A.loginOk(key);
-  res.audit = { actor: u.username, role: u.role };
+  let how = '';
+  if (u.totp_on) {
+    const code = String(body.code || '').trim();
+    if (!code) { res.audit = { actor: u.username, role: u.role, label: 'Contraseña correcta · falta el código 2FA' }; return send(res, 200, { need_2fa: true }); }
+    how = await secondFactor(u, code);
+    if (!how) { A.loginFail(key); res.audit = { actor: u.username, role: u.role, label: 'Código 2FA incorrecto' }; return send(res, 401, { error: 'Código incorrecto o vencido' }); }
+  }
+  A.loginOk(key); // solo se borra el contador de fallos cuando TODO salió bien (si no, se podrían adivinar códigos sin límite)
+  res.audit = { actor: u.username, role: u.role, ...(how === 'recovery' ? { label: 'Inicio de sesión con código de recuperación' } : how ? { label: 'Inicio de sesión (con 2FA)' } : {}) };
+  if (how === 'recovery') TG.notifyUser(u._id, `⚠️ Entraste al panel con un código de recuperación (te quedan ${Math.max(0, (u.totp_recovery || []).length - 1)}). Si no fuiste tú, cambia tu contraseña ya.`).catch(() => {});
   C.users.updateOne({ _id: u._id }, { $set: { last_login: now(), last_ip: A.clientIp(req) } }).catch(() => {});
-  send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id), 12 * 3600) });
+  send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id, u.sv || 0), 12 * 3600) });
 });
 route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) }));
 
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
-  send(res, 200, { username: u.username, role: u.role, perms: u.perms || null, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
+  send(res, 200, { username: u.username, role: u.role, perms: u.perms || null, totp: !!u.totp_on, must_2fa: u.role === 'subadmin' && !u.totp_on && !!st.require_2fa, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
     announcement: st.announcement });
@@ -480,9 +502,15 @@ async function createUser(username, hash, role, markup = 0) {
     balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: markup, active: 1, created_at: now() });
 }
 
-route('POST', '/api/admin/balance', 'admin', async (req, res, admin, b) => {
+route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
   const uid = Number(b.user_id), cents = toCents(b.amount), cur = curOf(b.currency);
   if (!Number.isInteger(uid) || !Number.isFinite(cents) || cents === 0 || Math.abs(cents) > (cur === 'usdt' ? 10000000 : 1000000000)) return send(res, 400, { error: 'Datos inválidos' });
+  if (admin.role === 'subadmin') {
+    const lim = Number(cur === 'usdt' ? admin.perms.max_adj_usdt : admin.perms.max_adj_cup) * 100;
+    if (Math.abs(cents) > lim) return send(res, 403, { error: `Supera tu límite por ajuste (${fmtCur(lim, cur)}). Pídele al dueño que lo haga.` });
+    if (String(b.note || '').trim().length < 3) return send(res, 400, { error: 'Escribe el motivo del ajuste (mínimo 3 letras): queda en el registro.' });
+    if (cur !== 'usdt' && cents % 100) return send(res, 400, { error: 'El monto en CUP debe ser entero' });
+  }
   try {
     await withTx(async s => {
       const t = await C.users.findOne({ _id: uid, role: 'reseller' }, { session: s });
@@ -493,6 +521,10 @@ route('POST', '/api/admin/balance', 'admin', async (req, res, admin, b) => {
       await ledger(s, uid, cents, cents > 0 ? 'topup' : 'adjust', null, String(b.note || '').slice(0, 200) || `Por ${admin.username}`, cur);
     });
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
+  if (admin.role === 'subadmin') {
+    const t = await C.users.findOne({ _id: uid });
+    TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${cents > 0 ? 'AGREGÓ' : 'QUITÓ'} ${fmtCur(Math.abs(cents), cur)} ${cents > 0 ? 'a' : 'de'} ${t ? t.username : '#' + uid}\nMotivo: ${String(b.note || '').slice(0, 120)}`).catch(() => {});
+  }
   send(res, 200, { ok: true });
 });
 
@@ -525,13 +557,20 @@ route('POST', '/api/admin/user-update', 'staff', async (req, res, _u, b) => {
     if (String(b.password).length < 8) return send(res, 400, { error: 'Contraseña de 8+ caracteres' });
     set.password_hash = A.hashPassword(String(b.password));
   }
-  if (Object.keys(set).length) await C.users.updateOne(f, { $set: set });
+  const upd = {}; if (Object.keys(set).length) upd.$set = set; if (b.password) upd.$inc = { sv: 1 }; // cambiar la clave cierra sus sesiones abiertas
+  if (Object.keys(upd).length) await C.users.updateOne(f, upd);
   send(res, 200, { ok: true });
 });
 
 route('GET', '/api/admin/orders', 'staff', async (req, res, _u) => {
-  const os = await C.orders.find({}).sort({ _id: -1 }).limit(200).toArray();
+  const sp = new URL(req.url, 'http://x').searchParams, q = (sp.get('q') || '').trim().toLowerCase();
+  const limit = Math.min(Number(sp.get('limit')) || 200, 600), f = {};
+  const ST = { unknown: ['unknown'], active: ['pending', 'processing'], completed: ['completed'], failed: ['failed'] };
+  if (ST[sp.get('status')]) f.status = { $in: ST[sp.get('status')] };
+  const dr = dateRange(sp.get('from'), sp.get('to')); if (dr) f.created_at = dr;
+  let os = await C.orders.find(f).sort({ _id: -1 }).limit(q ? 3000 : limit).toArray();
   const us = new Map((await C.users.find({ _id: { $in: [...new Set(os.map(o => o.user_id))] } }).toArray()).map(u => [u._id, u.username]));
+  if (q) os = os.filter(o => [o._id, '#' + o._id, us.get(o.user_id), o.product_name, o.target, o.reference_code].map(x => x ?? '').join(' ').toLowerCase().includes(q)).slice(0, limit);
   send(res, 200, os.map(o => {
     const price = (o.price_usdt_cents ?? o.price_cents) / 100; // equivalente USDT (para la ganancia)
     return { id: o._id, username: us.get(o.user_id), product_name: o.product_name, target: o.target, price, paid: o.price_cents / 100, currency: curOf(o.currency), status: o.status,
@@ -561,6 +600,7 @@ route('GET', '/api/admin/status', 'admin', async (req, res, _u) => {
     telegram: TG.enabled(), telegram_linked: !!(await C.users.findOne({ _id: _u.id })).telegram_chat_id,
     low_balance_threshold: Number(((await kvGet('low_balance_threshold')) || {}).value || 0),
     settings: await getSettings(),
+    backup_last: ((await kvGet('backup_last')) || {}).value || null, backup_err: ((await kvGet('backup_last_err')) || {}).value || '',
   });
 });
 
@@ -808,8 +848,15 @@ route('GET', '/api/topup-requests', 'reseller', async (req, res, u) =>
   send(res, 200, (await C.topup_requests.find({ user_id: u.id }).sort({ _id: -1 }).limit(20).toArray()).map(r => trOut(r, false))));
 
 route('GET', '/api/admin/topup-requests', 'staff', async (req, res) => {
-  const rs = await C.topup_requests.find({}).sort({ _id: -1 }).limit(60).toArray();
+  const sp = new URL(req.url, 'http://x').searchParams, q = (sp.get('q') || '').trim().toLowerCase();
+  const limit = Math.min(Number(sp.get('limit')) || 100, 400), f = {}, method = ['usdt', 'transfer', 'mobile'].includes(sp.get('method')) ? sp.get('method') : '';
+  if (['pending', 'approved', 'rejected'].includes(sp.get('status'))) f.status = sp.get('status');
+  const dr = dateRange(sp.get('from'), sp.get('to')); if (dr) f.created_at = dr;
   const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
+  let rs = await C.topup_requests.find(f).sort({ _id: -1 }).limit(q || method ? 3000 : limit).toArray();
+  if (method) rs = rs.filter(r => (r.method || 'usdt') === method);
+  if (q) rs = rs.filter(r => [r._id, '#' + r._id, us.get(r.user_id), r.note, r.tx_hash, r.admin_note].map(x => x ?? '').join(' ').toLowerCase().includes(q));
+  rs = rs.slice(0, limit);
   const ws = new Map((await C.wallets.find({}).toArray()).map(w => [w._id, w.user_id]));
   send(res, 200, rs.map(r => ({ ...trOut(r, true), username: us.get(r.user_id),
     wallet_owner: r.chain && ws.has(r.chain.from) ? us.get(ws.get(r.chain.from)) : null })));
@@ -852,7 +899,7 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
       if (!w) { try { await C.wallets.insertOne({ _id: r.from, user_id: r.user_id, created_at: now(), by: admin.username }); trusted = true; } catch (e) { if (!isDup(e)) throw e; } }
       else trusted = w.user_id === r.user_id;
     }
-    if (admin.role === 'subadmin') TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${approve ? 'aprobó' : 'rechazó'} la solicitud #${id}${approve ? ': ' + fmtCur(r.cents, r.cur) : ''}`).catch(() => {});
+    if (admin.role === 'subadmin') { const tu = await C.users.findOne({ _id: r.user_id }); TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${approve ? 'APROBÓ' : 'rechazó'} la solicitud #${id} de ${tu ? tu.username : '?'}${approve ? ': +' + fmtCur(r.cents, r.cur) : ''}`).catch(() => {}); }
     TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${fmtCur(r.cents, r.cur)} (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
   send(res, 200, { ok: true, trusted });
@@ -910,15 +957,78 @@ route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
   send(res, 200, { ok: true });
 });
 
+
+// ---------- 2FA, respaldo automático y sesiones ----------
+/** Comprueba el segundo factor: código de la app (sin reutilizar) o código de recuperación (se gasta). Devuelve 'totp' | 'recovery' | false. */
+async function secondFactor(u, code) {
+  const secret = A.unseal(u.totp_secret || '');
+  if (secret) {
+    const step = A.totpCheck(secret, code, u.totp_last || 0);
+    if (step) { await C.users.updateOne({ _id: u._id }, { $set: { totp_last: step } }); return 'totp'; }
+  }
+  const h = A.hashRecovery(code);
+  if ((u.totp_recovery || []).includes(h)) { await C.users.updateOne({ _id: u._id }, { $set: { totp_recovery: u.totp_recovery.filter(x => x !== h) } }); return 'recovery'; }
+  return false;
+}
+async function envReset2fa() { // salida de emergencia si pierdes el teléfono y los códigos: variable RESET_2FA_FOR=tu_usuario en Render, y la borras después
+  const n = String(process.env.RESET_2FA_FOR || '').trim().toLowerCase(); if (!n) return;
+  const r = await C.users.updateOne({ username_lc: n }, { $set: { totp_on: 0, totp_secret: null, totp_recovery: [], totp_pending: null }, $inc: { sv: 1 } });
+  if (!r.matchedCount) return console.error('RESET_2FA_FOR: no existe el usuario ' + n);
+  console.warn(`⚠ 2FA desactivada para "${n}" por RESET_2FA_FOR. Borra esa variable ahora.`);
+  try { await C.audit.insertOne({ _id: await nextId('audit'), at: now(), actor: 'sistema', actor_id: null, role: 'sistema', action: 'reset-2fa', label: '2FA desactivada por RESET_2FA_FOR', target: n, detail: {}, ok: true, status: 200, ip: '-' }); } catch {}
+}
+async function backupObject(strip) {
+  const out = { exported_at: new Date().toISOString(), version: 1 };
+  for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests', 'wallets', 'counters', 'kv', 'audit']) out[n] = await C[n].find({}).toArray();
+  for (const r of out.topup_requests) r.image = r.image ? '(imagen omitida)' : null; // las fotos harían el archivo enorme
+  // El respaldo que sale por Telegram NO lleva contraseñas ni secretos 2FA (Telegram guarda los archivos en su nube)
+  if (strip) for (const u of out.users) for (const k of ['password_hash', 'totp_secret', 'totp_recovery', 'totp_pending', 'tg_link_token']) delete u[k];
+  return out;
+}
+async function sendBackup(manual) {
+  if (!TG.enabled()) throw new Error('Telegram no está activado (falta TELEGRAM_BOT_TOKEN en Render).');
+  const admins = await C.users.find({ role: 'admin', telegram_chat_id: { $ne: null } }).toArray();
+  if (!admins.length) throw new Error('Conecta tu Telegram primero (Resumen → Avisos por Telegram).');
+  const gz = require('node:zlib').gzipSync(Buffer.from(JSON.stringify(await backupObject(true))));
+  if (gz.length > 45e6) throw new Error('El respaldo pesa demasiado para Telegram (más de 45 MB). Descárgalo desde el panel.');
+  const name = 'respaldo-panel-' + new Date().toISOString().slice(0, 10) + '.json.gz';
+  for (const a of admins) await TG.sendDocument(a.telegram_chat_id, name, gz, `💾 Respaldo ${manual ? 'manual' : 'automático'} del panel (${Math.round(gz.length / 1024)} KB)\nRevendedores, saldos y pedidos. Sin contraseñas ni fotos. Guárdalo.`);
+  await kvSet('backup_last', new Date().toISOString()); await kvSet('backup_last_err', '');
+}
+async function autoBackup() {
+  if (!(await getSettings()).auto_backup || !TG.enabled()) return;
+  const last = await kvGet('backup_last'), tried = await kvGet('backup_try'), t = Date.now();
+  if (last && t - new Date(last.value).getTime() < 7 * 864e5) return;
+  if (tried && t - Number(tried.value) < 6 * 3600e3) return; // si falla, reintenta cada 6 h
+  await kvSet('backup_try', t);
+  try { await sendBackup(false); }
+  catch (e) { console.error('respaldo automático:', e.message); await kvSet('backup_last_err', e.message.slice(0, 200)); }
+}
+
+
+// Fondos: lo que hay en Central One y lo que tienen TODOS los revendedores (dueño y sub-admins con permiso "saldos")
+route('GET', '/api/admin/funds', 'staff', async (req, res) => {
+  const b = await providerBalance(), last = await kvGet('provider_balance');
+  const us = (await C.users.find({ role: 'reseller' }).toArray()).map(u => ({ id: u._id, username: u.username, active: !!u.active, pending: !!u.pending_approval, balances: balancesOf(u) }));
+  const tot = { usdt: 0, transfer: 0, mobile: 0 }, withBal = { usdt: 0, transfer: 0, mobile: 0 };
+  for (const u of us) for (const c of ['usdt', 'transfer', 'mobile']) { tot[c] += Math.round(u.balances[c] * 100); if (u.balances[c] > 0) withBal[c]++; }
+  send(res, 200, {
+    provider: b.v ? { available: e4ToStr(b.v.availableE4), held: e4ToStr(b.v.heldE4), live: true } : (last ? { available: last.value, held: null, live: false, at: last.updated_at } : null),
+    provider_error: b.err || null,
+    totals: { usdt: tot.usdt / 100, transfer: tot.transfer / 100, mobile: tot.mobile / 100 }, with_balance: withBal, count: us.length,
+    resellers: us.sort((a, c) => (c.balances.usdt - a.balances.usdt) || a.username.localeCompare(c.username)),
+  });
+});
+
 // --- Equipo (sub-administradores) y registro de actividad: solo el dueño ---
 route('GET', '/api/admin/staff', 'admin', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'subadmin' }).sort({ _id: -1 }).toArray()).map(u => ({ id: u._id, username: u.username, active: !!u.active,
-    perms: normPerms(u.perms || {}), last_login: fmt(u.last_login), last_ip: u.last_ip || null, created_at: fmt(u.created_at) }))));
+    totp: !!u.totp_on, perms: normPerms(u.perms || {}), last_login: fmt(u.last_login), last_ip: u.last_ip || null, created_at: fmt(u.created_at) }))));
 route('POST', '/api/admin/staff', 'admin', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
   if (!/^[\w.-]{3,30}$/.test(username)) return send(res, 400, { error: 'Usuario: 3-30 letras, números, . _ -' });
   if (pw.length < 10 || pw.length > 200) return send(res, 400, { error: 'La contraseña del sub-admin debe tener 10+ caracteres' });
-  try { const u = await createUser(username, A.hashPassword(pw), 'subadmin', 0); await C.users.updateOne({ username_lc: username.toLowerCase() }, { $set: { perms: normPerms(b.perms || { revendedores: 1, saldo: 1, pedidos: 1 }) } }); }
+  try { const u = await createUser(username, A.hashPassword(pw), 'subadmin', 0); await C.users.updateOne({ username_lc: username.toLowerCase() }, { $set: { perms: normPerms(b.perms || { revendedores: 1, saldo: 1, pedidos: 1, saldos: 1 }) } }); }
   catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ese usuario ya existe' }); throw e; }
   send(res, 201, { ok: true });
 });
@@ -928,7 +1038,9 @@ route('POST', '/api/admin/staff-update', 'admin', async (req, res, _u, b) => {
   if (b.active !== undefined) set.active = b.active ? 1 : 0;
   if (b.perms) set.perms = normPerms(b.perms);
   if (b.password) { if (String(b.password).length < 10) return send(res, 400, { error: 'Contraseña de 10+ caracteres' }); set.password_hash = A.hashPassword(String(b.password)); }
-  if (Object.keys(set).length) await C.users.updateOne(f, { $set: set });
+  if (b.reset_2fa) Object.assign(set, { totp_on: 0, totp_secret: null, totp_recovery: [], totp_pending: null });
+  const upd = {}; if (Object.keys(set).length) upd.$set = set; if (b.password || b.revoke || b.reset_2fa) upd.$inc = { sv: 1 }; // sube la versión: sus sesiones abiertas dejan de valer
+  if (Object.keys(upd).length) await C.users.updateOne(f, upd);
   send(res, 200, { ok: true });
 });
 route('GET', '/api/admin/audit', 'admin', async (req, res) => send(res, 200, await auditRows(new URL(req.url, 'http://x').searchParams, Math.min(Number(new URL(req.url, 'http://x').searchParams.get('limit')) || 200, 1000))));
@@ -944,14 +1056,50 @@ route('POST', '/api/change-password', 'any', async (req, res, u, b) => {
   const d = await C.users.findOne({ _id: u.id }), pw = String(b.password || '');
   if (!d || !A.verifyPassword(String(b.current || ''), d.password_hash)) return send(res, 403, { error: 'La contraseña actual no es correcta' });
   if (pw.length < 8 || pw.length > 200) return send(res, 400, { error: 'La nueva contraseña debe tener 8 o más caracteres' });
-  await C.users.updateOne({ _id: u.id }, { $set: { password_hash: A.hashPassword(pw) } });
+  await C.users.updateOne({ _id: u.id }, { $set: { password_hash: A.hashPassword(pw) }, $inc: { sv: 1 } });
+  send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u.id, (d.sv || 0) + 1), 12 * 3600) }); // las demás sesiones se cierran; esta sigue
+});
+
+// Cerrar sesión en todos los dispositivos (sube la versión: todas las cookies anteriores dejan de valer)
+route('POST', '/api/logout-all', 'any', async (req, res, u) => {
+  await C.users.updateOne({ _id: u.id }, { $inc: { sv: 1 } });
+  send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) });
+});
+// Verificación en dos pasos (solo dueño y sub-admins)
+const isStaffRole = u => u.role === 'admin' || u.role === 'subadmin';
+route('POST', '/api/2fa/start', 'any', async (req, res, u) => {
+  if (!isStaffRole(u)) return send(res, 403, { error: 'No permitido' });
+  if ((await C.users.findOne({ _id: u.id })).totp_on) return send(res, 409, { error: 'Ya está activada' });
+  const secret = A.newSecret();
+  await C.users.updateOne({ _id: u.id }, { $set: { totp_pending: A.seal(secret) } });
+  send(res, 200, { secret, uri: `otpauth://totp/${encodeURIComponent('Shop Fast:' + u.username)}?secret=${secret}&issuer=${encodeURIComponent('Shop Fast')}&algorithm=SHA1&digits=6&period=30` });
+});
+route('POST', '/api/2fa/confirm', 'any', async (req, res, u, b) => {
+  if (!isStaffRole(u)) return send(res, 403, { error: 'No permitido' });
+  const d = await C.users.findOne({ _id: u.id }), pending = A.unseal(d.totp_pending || '');
+  if (!pending) return send(res, 400, { error: 'Empieza de nuevo: pulsa "Activar".' });
+  const step = A.totpCheck(pending, b.code, 0);
+  if (!step) return send(res, 400, { error: 'Ese código no coincide. Revisa la hora de tu teléfono e intenta con el siguiente código.' });
+  const rec = A.newRecovery();
+  await C.users.updateOne({ _id: u.id }, { $set: { totp_secret: d.totp_pending, totp_on: 1, totp_last: step, totp_recovery: rec.hashes, totp_pending: null } });
+  send(res, 200, { ok: true, recovery: rec.plain });
+});
+route('POST', '/api/2fa/disable', 'any', async (req, res, u, b) => {
+  const d = await C.users.findOne({ _id: u.id });
+  if (!d || !d.totp_on) return send(res, 400, { error: 'No está activada' });
+  if (u.role === 'subadmin' && (await getSettings()).require_2fa) return send(res, 403, { error: 'El dueño exige verificación en dos pasos a los sub-administradores.' });
+  if (!A.verifyPassword(String(b.password || ''), d.password_hash)) return send(res, 403, { error: 'Contraseña incorrecta' });
+  if (!(await secondFactor(d, String(b.code || '').trim()))) return send(res, 403, { error: 'Código incorrecto' });
+  await C.users.updateOne({ _id: u.id }, { $set: { totp_on: 0, totp_secret: null, totp_recovery: [], totp_pending: null } });
   send(res, 200, { ok: true });
+});
+route('POST', '/api/admin/backup-send', 'admin', async (req, res) => {
+  try { await sendBackup(true); send(res, 200, { ok: true }); }
+  catch (e) { send(res, 502, { error: e.message }); }
 });
 
 route('GET', '/api/admin/backup', 'admin', async (req, res) => {
-  const out = { exported_at: new Date().toISOString(), version: 1 };
-  for (const n of ['users', 'ledger', 'products', 'orders', 'topup_requests', 'wallets', 'counters', 'kv']) out[n] = await C[n].find({}).toArray();
-  for (const r of out.topup_requests) r.image = r.image ? '(imagen omitida)' : null; // las fotos harían el archivo enorme
+  const out = await backupObject(false);
   const name = 'respaldo-panel-' + new Date().toISOString().slice(0, 10) + '.json';
   res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(out, null, 1));
@@ -1092,6 +1240,9 @@ const server = http.createServer(async (req, res) => {
       if (r.role) {
         user = await A.readSession(req);
         if (!user) return send(res, 401, { error: 'Sesión expirada' });
+        if (user.role === 'subadmin' && !user.totp_on && !GATE_OK.has(ap) && (await getSettings()).require_2fa)
+          return send(res, 403, { error: 'El dueño exige verificación en dos pasos. Actívala en Mi cuenta.' });
+        if (user.role === 'subadmin') user.perms = normPerms(user.perms || {});
         let ok = true;
         if (r.role === 'staff') ok = user.role === 'admin' || (user.role === 'subadmin' && !!(user.perms && user.perms[STAFF_PERM[req.method + ' ' + ap]]));
         else if (r.role !== 'any') ok = user.role === r.role;
@@ -1119,12 +1270,14 @@ const server = http.createServer(async (req, res) => {
 (async () => {
   await connect();
   await bootstrapAdmin();
+  await envReset2fa();
   server.listen(PORT, () => console.log(`Panel en http://localhost:${PORT}  (proveedor: ${MODE}, base: ${process.env.MONGODB_URI ? 'MongoDB' : 'MEMORIA'})`));
   setInterval(() => pollOnce().catch(e => console.error('poll', e.message)), Number(process.env.POLL_MS) || 15000);
   setInterval(() => recoverPending(), 60000);
   setTimeout(recoverPending, 5000);
   if (MODE === 'real') provider.ping().then(() => console.log('Llave de Central One: OK'), e => console.error('ATENCIÓN: la llave de Central One no funciona:', e.message));
   setTimeout(syncSafe, 500);
+  setInterval(() => autoBackup().catch(e => console.error('respaldo', e.message)), 3600e3); setTimeout(() => autoBackup().catch(() => {}), 60000);
   const purgeAudit = () => { if (C.audit.deleteMany) C.audit.deleteMany({ at: { $lt: new Date(Date.now() - 180 * 864e5) } }).catch(() => {}); };
   setInterval(purgeAudit, 24 * 3600e3); setTimeout(purgeAudit, 30000);
   TG.start();

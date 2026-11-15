@@ -28,6 +28,20 @@ async function sendTo(chatId, text) {
   try { await tg('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true }); }
   catch (e) { console.error('Telegram:', e.message); }
 }
+/** Envía un archivo. A diferencia de sendTo, SÍ lanza error (para que el respaldo avise si falló). */
+async function sendDocument(chatId, filename, buf, caption) {
+  if (!TOKEN || !chatId) throw new Error('Telegram no está configurado');
+  const fd = new FormData();
+  fd.append('chat_id', String(chatId)); if (caption) fd.append('caption', caption);
+  fd.append('document', new Blob([buf], { type: 'application/gzip' }), filename);
+  const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), 90000);
+  try {
+    const r = await fetch(`${BASE}/bot${TOKEN}/sendDocument`, { method: 'POST', body: fd, signal: ctrl.signal });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.description || 'Telegram error');
+    return d.result;
+  } finally { clearTimeout(t); }
+}
 async function notifyUser(userId, text) {
   const u = await C.users.findOne({ _id: userId });
   if (u && u.telegram_chat_id) await sendTo(u.telegram_chat_id, text);
@@ -70,4 +84,4 @@ async function start() {
   catch (e) { console.error('Telegram: el token no funciona:', e.message); }
 }
 
-module.exports = { start, sendTo, notifyUser, notifyAdmins, linkFor, enabled: () => !!(TOKEN && botName) };
+module.exports = { start, sendTo, sendDocument, notifyUser, notifyAdmins, linkFor, enabled: () => !!(TOKEN && botName) };

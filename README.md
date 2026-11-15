@@ -84,3 +84,17 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
 - **Registro** (solo el dueño): quién hizo qué, sobre quién, cuándo y desde qué IP (accesos y accesos fallidos, saldos, pedidos,
   cambios de cuentas, ajustes, respaldos). Filtros, buscador y descarga CSV. Se conserva 180 días. Nunca guarda contraseñas ni fotos.
 - Todos los usuarios pueden cambiar su propia contraseña desde su cuenta.
+
+## Seguridad, fondos y respaldo (novedades)
+- **Verificación en dos pasos (2FA)** para el dueño y los sub-admins (Google Authenticator, Authy…): se activa en *Mi cuenta* / *Equipo*,
+  entrega 8 códigos de recuperación de un solo uso y no admite reutilizar un código. El dueño puede **exigirla** a los sub-admins
+  (sin ella solo entran a "Mi cuenta") y quitársela a uno que perdió el teléfono. Si TÚ pierdes teléfono y códigos: pon la variable
+  `RESET_2FA_FOR=tu_usuario` en Render, reinicia y bórrala después.
+- **Sesiones revocables**: cambiar una clave, "Cerrar todas las sesiones" o "Cerrar sesiones" (desde Equipo) invalidan las cookies abiertas.
+- **Respaldo automático** cada 7 días a tu Telegram (sin contraseñas ni fotos) + botón "Enviar respaldo a mi Telegram". Requiere
+  `TELEGRAM_BOT_TOKEN` y tener tu Telegram conectado. El botón "Descargar completo" sí incluye las claves cifradas: guárdalo bien.
+- **Pedidos y Solicitudes de saldo**: filtros por estado, método y fechas, con lupa (busca en todo el historial, no solo lo último).
+- **Sub-admin con "Ajustar saldo a mano"**: agrega o quita USDT/CUP con tope por ajuste y motivo obligatorio. Cada aprobación o ajuste
+  del sub-admin te llega por Telegram y aparece en *Resumen → Saldo movido por tu equipo* y en *Registro → Saldo del equipo*.
+- **Fondos** (dueño y sub-admins con permiso "Ver fondos"): saldo de Central One, total USDT/CUP de todos los revendedores,
+  saldo por revendedor con buscador y, solo para el dueño, los límites de cada sub-admin.
