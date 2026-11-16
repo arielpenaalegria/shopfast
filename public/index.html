@@ -124,7 +124,53 @@ details.fam>summary{padding:14px}
 .fld{display:flex;flex-direction:column;gap:4px;flex:1;font-size:.78rem;color:var(--mut);min-width:120px}
 .tag.role-admin{background:#3b2a06;color:#fcd34d}.tag.role-subadmin{background:#1e1b4b;color:#c7d2fe}.tag.role-reseller,.tag.role-visitante{background:var(--card2);color:var(--mut)}
 .mut,.list .l,.list .l>div{overflow-wrap:anywhere;word-break:break-word}
-main{overflow-x:hidden}
+main{overflow-x:clip}
+/* ===== Orden y organización (v2) ===== */
+/* Pestañas siempre a la vista al bajar */
+.tabs{position:sticky;top:61px;z-index:4;margin:0 -14px 14px;padding:8px 14px 8px;background:linear-gradient(#0b0b0dee 80%,#0b0b0d00);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+/* Títulos de sección */
+.sect{display:flex;align-items:center;gap:10px;margin:24px 2px 12px;font-size:.74rem;letter-spacing:1px;text-transform:uppercase;color:#8b8b95;font-weight:700}
+.sect::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+.sect:first-child{margin-top:4px}
+/* Tarjeta por revendedor */
+.rgrid{display:grid;gap:12px;grid-template-columns:1fr}
+.rbox{background:linear-gradient(180deg,#1c1c22,#17171c);border:1px solid var(--line);border-radius:16px;padding:14px;min-width:0}
+.rbox.off{opacity:.62}
+.rhead{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.av{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;flex:none;font-weight:800;color:#fff;text-transform:uppercase;background:linear-gradient(135deg,var(--pri),var(--pri2));box-shadow:0 6px 14px -8px #ff5a00}
+.rname{font-weight:700;overflow-wrap:anywhere;min-width:0}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px}
+.tile{background:#0f0f13;border:1px solid var(--line);border-radius:12px;padding:9px 10px;min-width:0}
+.tile span{display:block;font-size:.68rem;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile b{display:block;font-size:1.02rem;margin-top:2px;overflow-wrap:anywhere}
+.tile.zero b{color:#71717a;font-weight:600}
+.tag.manual{background:#3b2a06;color:#fcd34d}.tag.auto{background:var(--card2);color:var(--mut)}.tag.trust{background:#1e1b4b;color:#c7d2fe}
+details.newrev>summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none}
+details.newrev[open]>summary .chev{transform:rotate(90deg)}
+.regd .list{padding-bottom:6px}
+/* Cupos */
+.qrow{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:.85rem;margin:12px 0 6px}
+.qrow b{font-size:.95rem}
+.meter{height:9px;border-radius:99px;background:#0b0b0d;border:1px solid var(--line);overflow:hidden}
+.meter i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#22c55e,#a3e635);transition:width .3s var(--ease)}
+.meter.warn i{background:linear-gradient(90deg,#f59e0b,#fb923c)}.meter.low i{background:linear-gradient(90deg,#ef4444,#f97316)}
+/* Ranking */
+.rank{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.rank:last-child{border:0}
+.medal{font-size:1.5rem;text-align:center;line-height:1}.pos{font-weight:800;color:var(--mut);text-align:center}
+.rank .bar{height:6px;border-radius:99px;background:#0b0b0d;margin-top:7px;overflow:hidden}.rank .bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--pri),var(--pri2))}
+/* Ventana para ajustar saldo */
+.modal{position:fixed;inset:0;background:#000b;z-index:60;display:flex;align-items:flex-end;justify-content:center;-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.sheet{background:var(--card);border:1px solid var(--line);border-radius:22px 22px 0 0;width:100%;max-width:480px;padding:18px 16px 24px;max-height:92vh;overflow:auto;animation:rise .2s var(--ease) both}
+.sheet input{width:100%}
+.sheet .row{flex-wrap:nowrap}.sheet .row>button{flex:1}
+.pm{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pm button{background:var(--card2);color:var(--ink);border:2px solid var(--line);box-shadow:none!important}
+.pm button.on.plus{border-color:var(--ok);background:#052e16;color:#86efac}.pm button.on.minus{border-color:var(--err);background:#3a1414;color:#fca5a5}
+@media (min-width:560px){.modal{align-items:center;padding:16px}.sheet{border-radius:22px}}
+@media (min-width:720px){.rgrid{grid-template-columns:1fr 1fr}}
+@media (max-width:480px){.tabs{margin:0 -10px 12px;padding:8px 10px}.tile b{font-size:.95rem}}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b>Shop Fast<small>Panel de revendedores</small></b></div><span id="who"></span></header>
 <main>

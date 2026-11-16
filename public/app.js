@@ -38,7 +38,7 @@ const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
 /** Monto con su moneda: USDT con 2 decimales, CUP en enteros. */
 const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
 const priceIn = (p, c) => p.prices ? (p.prices[c] != null ? p.prices[c] : (c === 'usdt' ? p.price : null)) : (c === 'usdt' ? p.price : null);
-let userQuery = '', ME = null, auditCat = 'all', auditQ = '';
+let userQuery = '', ME = null, auditCat = 'all', auditQ = '', userFilter = 'all', fundSort = 'usdt', fundOnly = false;
 let hsub = 'recargas', myOrdF = { status: '', q: '', from: '', to: '' }, myLedF = { status: '', method: '', q: '', from: '', to: '' };
 let ordF = { status: '', q: '', from: '', to: '' }, reqF = { status: '', method: '', q: '', from: '', to: '' };
 const qs = o => Object.entries(o).filter(([, v]) => v !== '' && v != null).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
@@ -233,7 +233,7 @@ function userBusy() {
   const a = document.activeElement;
   if (a && $('app').contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
   if (Date.now() - lastTyping < 60000) return true;
-  return [...$('app').querySelectorAll('input:not([type=file]),textarea')].some(i => i.value.trim()) || !!$('app').querySelector('img.proof:not([data-saved])') || !!document.querySelector('.zoom');
+  return [...$('app').querySelectorAll('input:not([type=file]),textarea')].some(i => i.value.trim()) || !!$('app').querySelector('img.proof:not([data-saved])') || !!document.querySelector('.zoom, .modal');
 }
 
 /** Tarjeta para cambiar la contraseña propia (revendedor, sub-admin o dueño). */
@@ -593,19 +593,72 @@ async function adminView() {
   const rep = tab === 'reportes' ? await api('GET', '/api/admin/report?period=' + period) : null;
   out.replaceChildren();
   const note = el('div');
-  const adjust = async (r, c) => {
-    const lim = OWN ? '' : `\n(Tu límite por ajuste: ${c === 'usdt' ? ME.perms.max_adj_usdt + ' USDT' : Number(ME.perms.max_adj_cup).toLocaleString('es') + ' CUP'})`;
-    const a = prompt(`Saldo ${CUR_LONG[c]} de ${r.username}\nMonto a abonar (negativo para restar):${lim}`); if (!a) throw new Error('Cancelado');
-    let note = '';
-    if (!OWN) { note = prompt('Motivo del ajuste (obligatorio; queda en el registro):') || ''; if (note.trim().length < 3) throw new Error('Escribe el motivo del ajuste.'); }
-    await api('POST', '/api/admin/balance', { user_id: r.id, amount: a.replace(',', '.'), currency: c, note });
+  /** Ventana para agregar o quitar saldo a mano. El sub-admin ve cuánto cupo le queda antes de confirmar. */
+  const adjust = (r, c0 = 'usdt') => new Promise((resolve, reject) => {
+    let cur = c0, sign = 1;
+    const bal = c => ((r.balances || { usdt: r.balance })[c] || 0);
+    const amt = el('input', { type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: 'Monto', 'aria-label': 'Monto' });
+    const why = el('input', { placeholder: OWN ? 'Motivo (opcional)' : 'Motivo (obligatorio, queda en el registro)', maxlength: '200', 'aria-label': 'Motivo' });
+    const err = el('div'), info = el('div', { class: 'mut' }), prev = el('div', { class: 'paysum' });
+    const chipsBox = el('div', { class: 'chips' }), pm = el('div', { class: 'pm' });
+    const close = () => ov.remove();
+    const cancel = () => { close(); reject(new Error('Cancelado')); };
+    const draw = () => {
+      chipsBox.replaceChildren(...CURS.map(k => el('button', { type: 'button', class: 'chip' + (k === cur ? ' on' : ''), onclick: () => { cur = k; draw(); } }, CUR_ICON[k] + ' ' + CUR_S[k])));
+      pm.replaceChildren(el('button', { type: 'button', class: 'plus' + (sign > 0 ? ' on' : ''), onclick: () => { sign = 1; draw(); } }, '＋ Agregar'), el('button', { type: 'button', class: 'minus' + (sign < 0 ? ' on' : ''), onclick: () => { sign = -1; draw(); } }, '－ Quitar'));
+      const n = Number(String(amt.value).replace(',', '.')) || 0, after = bal(cur) + sign * n;
+      prev.className = 'paysum' + (after < 0 ? ' low' : '');
+      prev.replaceChildren(el('span', {}, `Ahora tiene ${money(bal(cur), cur)} → quedaría`), el('b', {}, money(after, cur)));
+      if (!OWN && ME.quota) {
+        const q = cur === 'usdt' ? ME.quota.usdt : ME.quota.cup, mx = cur === 'usdt' ? ME.perms.max_adj_usdt : ME.perms.max_adj_cup;
+        info.className = 'msg ' + (q.left <= 0 ? 'err' : 'warn');
+        const mm = v => cur === 'usdt' ? Number(v).toFixed(2) + ' USDT' : Math.round(v).toLocaleString('es') + ' CUP';
+        info.replaceChildren(`Tu cupo restante: ${mm(q.left)} (agregar y quitar suman) · máximo por ajuste: ${mm(mx)}`);
+      }
+    };
+    amt.addEventListener('input', draw);
+    const go = el('button', { class: 'big' }, 'Confirmar');
+    go.onclick = async () => {
+      const n = Number(String(amt.value).replace(',', '.'));
+      if (!(n > 0)) return msg(err, 'Escribe un monto mayor que 0.', 'err');
+      if (cur !== 'usdt' && !Number.isInteger(n)) return msg(err, 'En CUP el monto debe ser un número entero.', 'err');
+      if (!OWN && why.value.trim().length < 3) return msg(err, 'Escribe el motivo (mínimo 3 letras).', 'err');
+      if (!OWN && ME.quota) {
+        const q = cur === 'usdt' ? ME.quota.usdt : ME.quota.cup, mx = Number(cur === 'usdt' ? ME.perms.max_adj_usdt : ME.perms.max_adj_cup);
+        if (n > mx) return msg(err, `Este monto supera tu máximo por ajuste (${mx}). Pídele al dueño que lo haga o divídelo.`, 'err');
+        if (n > q.left) return msg(err, q.left <= 0 ? 'Llegaste a tu límite de ajustes manuales. El dueño debe restablecerlo.' : `Solo te quedan ${q.left} de cupo. Pídele al dueño que lo restablezca.`, 'err');
+      }
+      go.disabled = true;
+      try {
+        await api('POST', '/api/admin/balance', { user_id: r.id, amount: String(sign * n), currency: cur, note: why.value.trim() });
+        if (!OWN) { try { ME = await api('GET', '/api/me'); } catch {} }
+        close(); resolve();
+      } catch (e) { msg(err, e.message, 'err'); go.disabled = false; }
+    };
+    const ov = el('div', { class: 'modal', onclick: e => { if (e.target === ov) cancel(); } },
+      el('div', { class: 'sheet', role: 'dialog', 'aria-label': 'Ajustar saldo' },
+        el('h2', {}, 'Ajustar saldo'), el('div', { class: 'mut', style: 'margin:-6px 0 12px' }, 'Cuenta: ', el('b', {}, r.username)),
+        chipsBox, el('div', { style: 'height:10px' }), pm, el('div', { style: 'height:10px' }), amt, el('div', { style: 'height:8px' }), why, el('div', { style: 'height:10px' }), prev, info, err,
+        el('div', { class: 'row', style: 'margin:12px 0 0' }, el('button', { type: 'button', class: 'sec', onclick: cancel }, 'Cancelar'), go)));
+    draw(); document.body.append(ov); amt.focus();
+  });
+  /** Barras de cupo de ajustes manuales (USDT y CUP). */
+  const meterRow = (label, q, unit) => {
+    const pct = q.limit > 0 ? Math.min(100, Math.round(q.used / q.limit * 100)) : 100, cls = pct >= 100 ? 'low' : pct >= 80 ? 'warn' : '';
+    const f = unit === 'USDT' ? v => Number(v).toFixed(2) : v => Math.round(v).toLocaleString('es');
+    return el('div', {}, el('div', { class: 'qrow' }, el('span', { class: 'mut' }, label), el('span', {}, el('b', {}, `Quedan ${f(q.left)} ${unit}`), el('span', { class: 'mut' }, ` · usado ${f(q.used)} de ${f(q.limit)}`))), el('div', { class: 'meter ' + cls }, el('i', { style: `width:${pct}%` })));
   };
+  const quotaBlock = qt => el('div', {}, meterRow('💲 USDT', qt.usdt, 'USDT'), meterRow('🏦📱 CUP (transferencia + saldo móvil)', qt.cup, 'CUP'),
+    el('div', { class: 'mut', style: 'margin-top:6px;font-size:.78rem' }, 'Último restablecimiento: ' + (qt.reset_at ? qt.reset_at + ' UTC' : 'nunca')));
+  const resetQuota = async m => { if (!confirm(`¿Restablecer el cupo de ${m.username}?\nVolverá a tener su cupo completo y el conteo empieza de cero.`)) throw new Error('Cancelado'); await api('POST', '/api/admin/staff-update', { user_id: m.id, reset_quota: true }); };
+  const stat = (l, v, style) => el('div', { class: 'stat' }, el('span', { class: 'mut' }, l), el('b', { style: style || null }, String(v)));
+  const sect = t => el('div', { class: 'sect' }, t);
   const act = (label, fn, cls = 'sec') => el('button', { class: cls + ' sm', onclick: async () => { try { await fn(); await adminView(); } catch (e) { if (e.message !== 'Cancelado') alert(e.message); } } }, label);
   const pending = orders.filter(o => o.status === 'unknown').length, preq = reqs.filter(r => r.status === 'pending').length;
   const pend = users.filter(u => u.pending).length;
   const tSaldo = ['saldo', 'Saldo' + (preq ? ` (${preq})` : '')], tPed = ['pedidos', 'Pedidos' + (pending ? ` (${pending})` : '')], tRev = ['revendedores', 'Revendedores' + (pend ? ` (${pend})` : '')];
   const tFondos = ['fondos', 'Fondos'];
-  const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tFondos, tPed, ['reportes', 'Ganancias'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro']]
+  const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tFondos, tPed, ['reportes', 'Ventas'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro'], ['ajustes', 'Ajustes']]
     : [can('saldo') && tSaldo, can('saldos') && tFondos, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
   if (!tabs.some(t => t[0] === tab)) { tab = tabs[0][0]; if (tab === 'cuenta' && can('saldo')) tab = 'saldo'; }
   put(out, el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
@@ -623,11 +676,10 @@ async function adminView() {
 
   if (tab === 'resumen') {
     const today = new Date().toISOString().slice(0, 10);
-    const feed = await api('GET', '/api/admin/audit?cat=money&limit=8');
+    const [feed, team] = await Promise.all([api('GET', '/api/admin/audit?cat=money&limit=8'), api('GET', '/api/admin/team-activity')]);
     const done = orders.filter(o => o.status === 'completed' && o.created_at.startsWith(today));
     const pb = st.provider_balance;
-    const th = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: String(st.low_balance_threshold || ''), placeholder: 'Ej. 20' });
-    put(out, 
+    put(out,
       el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Saldo en Central One' + (pb && !pb.live ? ' (último dato)' : '')),
         el('div', { class: 'bal' }, pb ? usd(pb.available) : '—'),
         el('div', { class: 'mut' }, pb && pb.held !== null ? `Retenido en pedidos en curso: ${usd(pb.held)}` : (st.balance_error ? 'No se pudo leer el saldo en vivo' : ''))),
@@ -636,6 +688,12 @@ async function adminView() {
         el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Vendido'), el('b', {}, usdt(done.reduce((s, o) => s + o.price, 0)))),
         el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Ganancia'), el('b', { style: 'color:var(--ok)' }, usdt(done.reduce((s, o) => s + Number(o.margin), 0)))),
         el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Por revisar'), el('b', { style: pending + preq ? 'color:var(--warn)' : '' }, String(pending + preq))))),
+      card('Equipo · cupo de saldo manual', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Lo que le queda a cada sub-administrador para agregar o quitar saldo a mano. Cuando llega a 0, tú decides si le restableces el cupo.'),
+        team.staff.filter(m => m.perms.ajustar).length ? el('div', { class: 'list' }, ...team.staff.filter(m => m.perms.ajustar).map(m => el('div', { style: 'display:block' },
+          el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px' }, el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado')), act('Restablecer cupo', () => resetQuota(m))),
+          quotaBlock(m.quota))))
+          : el('div', { class: 'mut' }, 'Ningún sub-administrador tiene el permiso "Ajustar saldo a mano".'),
+        el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { tab = 'equipo'; adminView(); } }, 'Ver detalle por revendedor'))),
       (() => {
         const line = r => {
           const d = r.detail || {};
@@ -644,9 +702,32 @@ async function adminView() {
         };
         return card('Saldo movido por tu equipo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Lo que tus sub-administradores aprueban o ajustan a mano. También te llega aviso por Telegram.'),
           feed.length ? el('div', { class: 'list' }, ...feed.map(line)) : el('div', { class: 'mut' }, 'Todavía no han movido saldo.'), el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { auditCat = 'money'; tab = 'registro'; adminView(); } }, 'Ver todo en Registro')));
+      })());
+  }
+
+  /* ---------- Ajustes: todo lo que se configura una vez, ordenado por tema ---------- */
+  if (tab === 'ajustes') {
+    const th = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: String(st.low_balance_threshold || ''), placeholder: 'Ej. 20' });
+    put(out,
+      sect('Precios y cuentas'),
+      (() => {
+        const S = st.settings, mk = el('input', { type: 'number', inputmode: 'decimal', min: '0', max: '100', step: 'any', value: String(S.default_markup), placeholder: 'Ej. 10', 'aria-label': 'Margen general %' });
+        const manual = users.filter(u => u.markup_manual && !u.pending), auto = users.filter(u => !u.markup_manual && !u.pending);
+        return card('Margen de ganancia general',
+          el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Un solo % para todas las cuentas: las nuevas nacen con él y las ya registradas lo reciben cuando pulsas "Aplicar a todos". Las cuentas con margen puesto a mano (🔒) no se tocan: solo tú las cambias, una por una.'),
+          el('div', { class: 'stats' }, stat('Margen general', S.default_markup + '%', 'color:var(--pri3)'), stat('Cuentas automáticas', auto.length), stat('Con margen manual 🔒', manual.length)),
+          el('div', { class: 'row', style: 'margin-top:12px' }, mk, act('Aplicar a todos', async () => {
+            const v = Number(String(mk.value).replace(',', '.'));
+            if (!(mk.value !== '' && v >= 0 && v <= 100)) throw new Error('Escribe un margen entre 0 y 100.');
+            if (!confirm(`¿Poner ${v}% de margen a las ${auto.length} cuentas automáticas y a las nuevas?\n\n${manual.length} cuenta(s) con margen manual NO cambian.`)) throw new Error('Cancelado');
+            const r = await api('POST', '/api/admin/markup-all', { markup_pct: mk.value.replace(',', '.') });
+            alert(`Listo: ${r.applied} cuenta(s) pasaron a ${r.markup_pct}%.` + (r.skipped ? `\n${r.skipped} con margen manual quedaron como estaban.` : ''));
+          }, '')),
+          manual.length ? el('details', { class: 'regd', style: 'margin-top:10px' }, el('summary', {}, el('b', {}, `Cuentas con margen manual (${manual.length})`), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
+            el('div', { class: 'list' }, ...manual.map(u => el('div', {}, el('div', { class: 'l' }, u.username, el('div', { class: 'mut' }, `Margen ${u.markup_pct}% 🔒`)),
+              el('div', { class: 'r' }, act('Volver a automático', () => api('POST', '/api/admin/user-update', { user_id: u.id, markup_auto: true })))))),
+            el('div', { class: 'mut', style: 'margin:6px 0 10px' }, '"Volver a automático" le pone el margen general y desde ahí sigue los cambios generales.')) : null);
       })(),
-      card('Alerta de saldo bajo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te aviso por Telegram (y aquí arriba) cuando el saldo de Central One baje de este monto. 0 = desactivada.'),
-        el('div', { class: 'row' }, th, act('Guardar', () => api('POST', '/api/admin/settings', { low_balance_threshold: th.value.replace(',', '.') || 0 }), ''))),
       (() => {
         const S = st.settings, rt = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_transfer || '', placeholder: 'Ej. 400' }),
           rm = el('input', { type: 'number', inputmode: 'decimal', min: '0', value: S.rate_mobile || '', placeholder: 'Ej. 300' }), rd = el('input', { type: 'number', min: '0', max: '60', value: String(S.rate_stale_days ?? 3) });
@@ -660,16 +741,24 @@ async function adminView() {
       (() => {
         const S = st.settings, mode = el('select', {}, ...[['approval', 'Abierto, con mi aprobación'], ['open', 'Abierto, sin aprobación'], ['off', 'Cerrado (solo yo creo cuentas)']]
           .map(([v, l]) => el('option', { value: v, selected: S.registration === v ? '' : null }, l)));
-        const mk = el('input', { type: 'number', inputmode: 'decimal', min: '0', max: '100', value: String(S.default_markup), placeholder: 'Margen %' });
-        return card('Registro de revendedores', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores pueden crearse una cuenta con su correo en ' + location.origin + '. Margen inicial de las cuentas nuevas:'),
-          el('div', { class: 'row' }, mode), el('div', { class: 'row' }, mk, act('Guardar', () => api('POST', '/api/admin/settings', { registration: mode.value, default_markup: mk.value || 0 }), '')));
+        const tw = el('input', { type: 'checkbox' }); tw.checked = !!Number(S.trust_new_wallets);
+        return card('Registro de revendedores', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores pueden crearse una cuenta con su correo en ' + location.origin + '. Las cuentas nuevas nacen con el margen general de arriba (' + S.default_markup + '%).'),
+          el('div', { class: 'row' }, mode),
+          el('label', { class: 'chk' }, tw, el('span', {}, el('b', {}, 'Confiar en las billeteras de las cuentas nuevas'),
+            el('small', { class: 'mut', style: 'display:block' }, 'Activado: la primera billetera USDT desde la que pague una cuenta nueva se registra como de confianza y se le abona sola, sin que la apruebes. Solo cuenta para las cuentas que se creen desde ahora; en las que ya existen lo activas una por una en Revendedores → Más opciones.'),
+            el('small', { style: 'display:block;color:#fcd34d;margin-top:4px' }, 'Ojo: una cuenta con esto activo podría reclamar con su hash un pago hecho por otra persona a tu billetera. Actívalo solo si confías en tus revendedores.'))),
+          el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { registration: mode.value, trust_new_wallets: tw.checked ? 1 : 0 }), '')));
       })(),
+      sect('Avisos'),
+      card('Alerta de saldo bajo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te aviso por Telegram (y aquí arriba) cuando el saldo de Central One baje de este monto. 0 = desactivada.'),
+        el('div', { class: 'row' }, th, act('Guardar', () => api('POST', '/api/admin/settings', { low_balance_threshold: th.value.replace(',', '.') || 0 }), ''))),
       (() => {
         const ta = el('textarea', { rows: '3', placeholder: 'Ej.: Free Fire con 10% de bono hoy 🎉', style: 'width:100%' }); ta.value = st.settings.announcement || '';
         return card('Aviso para revendedores', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Lo ven arriba en su panel. Déjalo vacío para quitarlo.'), ta,
           el('div', { class: 'acts' }, act('Publicar', () => api('POST', '/api/admin/settings', { announcement: ta.value }), ''), st.settings.announcement ? act('Quitar', () => api('POST', '/api/admin/settings', { announcement: '' }), 'red') : null));
       })(),
       telegramCard(st, adminView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'Desactivado. Para activarlo crea un bot con @BotFather y pon su token en la variable TELEGRAM_BOT_TOKEN de Render.')),
+      sect('Copias y seguridad'),
       (() => {
         const bkBox = el('div'), bkAuto = el('input', { type: 'checkbox' });
         bkAuto.checked = !!Number(st.settings.auto_backup ?? 1);
@@ -738,6 +827,7 @@ async function adminView() {
         el('div', { class: 'addr' }, location.origin + '/status'),
         el('div', { class: 'mut' }, 'Responde error 503 si la base de datos no contesta. Ojo: el MongoDB Atlas gratis NO hace copias automáticas; tu copia real es el respaldo semanal de Telegram. Pruébalo restaurándolo alguna vez.'),
         el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { try { navigator.clipboard.writeText(location.origin + '/status'); alert('Dirección copiada'); } catch { alert(location.origin + '/status'); } } }, 'Copiar dirección'))),
+      sect('Estado del sistema'),
       card('Estado', el('div', { class: 'mut' }, 'Catálogo actualizado: ' + (st.catalog_synced_at ? st.catalog_synced_at + ' UTC' : 'todavía no')),
         el('div', { class: 'mut' }, 'Productos activos: ' + prods.filter(p => p.active).length + ' · Revendedores: ' + users.length),
         el('div', { class: 'mut' }, 'Webhooks: ' + (st.webhooks ? 'activos' + (st.webhook_test_at ? ' · última prueba ' + st.webhook_test_at + ' UTC' : '') : 'sin configurar (se usa consulta periódica)')),
@@ -819,7 +909,7 @@ async function adminView() {
       reqFilters, reqCnt, reqBox),
       OWN && card('Billeteras de confianza', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Los pagos desde estas billeteras se abonan solos a su revendedor. No pongas aquí billeteras de exchanges.'),
         wallets.length ? el('div', { class: 'list' }, ...wallets.map(w => el('div', {},
-          el('div', { class: 'l' }, el('div', {}, w.username || '?'), el('div', { class: 'mut addr-s' }, w.address)),
+          el('div', { class: 'l' }, el('div', {}, w.username || '?', w.auto ? ' ' : null, w.auto ? el('span', { class: 'tag trust' }, 'automática') : null), el('div', { class: 'mut addr-s' }, w.address)),
           el('div', { class: 'r' }, act('Quitar', () => api('POST', '/api/admin/wallet-remove', { address: w.address }), 'red'))))) : el('div', { class: 'mut' }, 'Ninguna todavía. Se agregan al aprobar un pago y marcar "confiar".')));
     if (hasF(reqF)) reloadReqs(); else drawReqs(reqs);
   }
@@ -827,9 +917,17 @@ async function adminView() {
   if (tab === 'reportes' && rep) {
     const max = Math.max(0.01, ...rep.daily.map(d => d.profit));
     put(out, 
-      el('div', { class: 'tabs' }, ...[['day', 'Hoy'], ['week', 'Esta semana'], ['month', 'Este mes']].map(([k, l]) =>
-        el('button', { class: k === period ? 'on' : '', onclick: () => { period = k; adminView(); } }, l))),
-      card('Ganancias', el('div', { class: 'mut' }, 'Desde ' + rep.from + ' UTC · solo recargas completadas'),
+      el('div', { class: 'chips', style: 'margin-bottom:14px' }, ...[['day', 'Hoy'], ['week', 'Esta semana'], ['month', 'Este mes'], ['all', 'Todo']].map(([k, l]) =>
+        el('button', { class: 'chip' + (k === period ? ' on' : ''), onclick: () => { period = k; adminView(); } }, l))),
+      card('🏆 Quién vende más', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Ordenado por cantidad de recargas completadas' + (period === 'all' ? ' (desde siempre)' : ' · desde ' + rep.from + ' UTC') + '.'),
+        rep.ranking.length ? el('div', {}, ...rep.ranking.slice(0, 20).map((x, i) => el('div', { class: 'rank' },
+          el('div', { class: i < 3 ? 'medal' : 'pos' }, ['🥇', '🥈', '🥉'][i] || String(i + 1)),
+          el('div', { style: 'min-width:0' }, el('div', { class: 'rname' }, x.username), el('div', { class: 'mut' }, `${x.share}% de las recargas · vendió ${usdt(x.sold)}`),
+            el('div', { class: 'bar' }, el('i', { style: `width:${Math.max(3, Math.round(x.count / rep.ranking[0].count * 100))}%` }))),
+          el('div', { style: 'text-align:right' }, el('b', { style: 'font-size:1.2rem' }, String(x.count)), el('div', { class: 'mut' }, x.count === 1 ? 'recarga' : 'recargas')))))
+          : el('div', { class: 'mut' }, 'Sin ventas en este periodo.'),
+        rep.ranking.length > 20 ? el('div', { class: 'mut', style: 'margin-top:8px' }, `Se muestran los 20 primeros de ${rep.ranking.length}.`) : null),
+      card('Ganancias', el('div', { class: 'mut' }, (period === 'all' ? 'Desde siempre' : 'Desde ' + rep.from + ' UTC') + ' · solo recargas completadas'),
         el('div', { class: 'stats', style: 'margin-top:10px' },
           el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Recargas'), el('b', {}, String(rep.count))),
           el('div', { class: 'stat' }, el('span', { class: 'mut' }, 'Vendido'), el('b', {}, usdt(rep.sold))),
@@ -838,7 +936,7 @@ async function adminView() {
       card('Ganancia de los últimos 14 días',
         el('div', { class: 'bars' }, ...rep.daily.map(d => el('div', { style: `height:${Math.round(d.profit / max * 100)}%`, title: `${d.day}: ${usdt(d.profit)}` }))),
         el('div', { class: 'bars-l' }, ...rep.daily.map(d => el('span', {}, d.day.slice(8))))),
-      card('Por revendedor', rep.resellers.length ? el('div', { class: 'list' }, ...rep.resellers.map(x => el('div', {},
+      card('Ganancia por revendedor', rep.resellers.length ? el('div', { class: 'list' }, ...rep.resellers.map(x => el('div', {},
         el('div', { class: 'l' }, el('div', {}, x.username), el('div', { class: 'mut' }, `${x.count} recargas · vendió ${usdt(x.sold)}`)),
         el('div', { class: 'r', style: 'font-weight:800;color:var(--ok)' }, usdt(x.profit))))) : el('div', { class: 'mut' }, 'Sin ventas en este periodo.')),
       card('Productos que más ganancia dejan', rep.products.length ? el('div', { class: 'list' }, ...rep.products.map(x => el('div', {},
@@ -886,38 +984,67 @@ async function adminView() {
   }
 
   if (tab === 'revendedores') {
-    const nu = { u: el('input', { placeholder: 'Usuario' }), p: el('input', { placeholder: 'Contraseña (8+)', type: 'password' }), m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', value: '10' }) };
-    const create = el('button', {}, 'Crear');
+    const defM = OWN ? Number(st.settings.default_markup ?? 10) : 0;
+    const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off', 'aria-label': 'Usuario' }), p: el('input', { placeholder: 'Contraseña (8+)', type: 'password', autocomplete: 'new-password', 'aria-label': 'Contraseña' }),
+      m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', step: 'any', value: String(defM), 'aria-label': 'Margen %' }) };
+    const tw = el('input', { type: 'checkbox' }); tw.checked = !!Number(st.settings.trust_new_wallets);
+    const create = el('button', {}, 'Crear cuenta');
     create.onclick = async () => {
-      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.') }); adminView(); }
+      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.'), ...(OWN ? { trust_wallets: tw.checked } : {}) }); adminView(); }
       catch (e) { msg(note, e.message, 'err'); }
     };
     const usersBox = el('div');
+    const balOf = u => u.balances || { usdt: u.balance };
+    const hasBal = u => CURS.some(c => (balOf(u)[c] || 0) > 0);
     const matchU = r => !userQuery.trim() || String(r.username).toLowerCase().includes(userQuery.trim().toLowerCase());
+    const FILT = { all: () => true, bal: hasBal, nobal: u => !hasBal(u), off: u => !u.active };
+    const FL = [['all', 'Todos'], ['bal', 'Con saldo'], ['nobal', 'Sin saldo'], ['off', 'Desactivados']];
+    /** Una tarjeta por revendedor: quién es, cuánto tiene en cada saldo y las acciones, sin amontonar botones. */
+    const rbox = r => {
+      const b = balOf(r);
+      return el('div', { class: 'rbox' + (r.active ? '' : ' off') },
+        el('div', { class: 'rhead' }, el('div', { class: 'av' }, String(r.username).trim().charAt(0) || '?'),
+          el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username),
+            el('div', { class: 'tags' }, r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
+              OWN ? el('span', { class: 'tag ' + (r.markup_manual ? 'manual' : 'auto') }, `Margen ${r.markup_pct}% · ${r.markup_manual ? '🔒 manual' : 'general'}`) : null,
+              OWN && r.trust_wallets ? el('span', { class: 'tag trust' }, '🔓 billeteras de confianza') : null))),
+        el('div', { class: 'tiles' }, ...CURS.map(c => el('div', { class: 'tile' + ((b[c] || 0) > 0 ? '' : ' zero') }, el('span', {}, CUR_ICON[c] + ' ' + CUR_S[c]),
+          el('b', {}, c === 'usdt' ? Number(b[c] || 0).toFixed(2) : Math.round(b[c] || 0).toLocaleString('es'))))),
+        el('div', { class: 'acts', style: 'margin-top:0' },
+          can('ajustar') ? act('± Agregar / quitar saldo', () => adjust(r), '') : null,
+          act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec')),
+        OWN ? el('details', { class: 'regd', style: 'margin:10px 0 0' }, el('summary', {}, el('b', {}, 'Más opciones'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
+          el('div', { class: 'acts', style: 'margin:0 0 10px' },
+            act('Cambiar margen', async () => { const a = prompt(`Margen % para ${r.username}.\nQuedará como MANUAL 🔒: el cambio general ya no lo toca.`, r.markup_pct); if (a !== null && a.trim() !== '') await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
+            r.markup_manual ? act('Margen: volver a automático', () => api('POST', '/api/admin/user-update', { user_id: r.id, markup_auto: true })) : null,
+            act(r.trust_wallets ? '🔓 Quitar confianza en billeteras' : '🔒 Confiar en sus billeteras', async () => {
+              if (!r.trust_wallets && !confirm(`¿Confiar en las billeteras de ${r.username}?\n\nSu primera billetera nueva se registra y se le abona sola, sin que la apruebes. No lo actives si paga desde un exchange o si no confías en esta persona.`)) throw new Error('Cancelado');
+              await api('POST', '/api/admin/user-update', { user_id: r.id, trust_wallets: !r.trust_wallets });
+            }),
+            act('Cambiar clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }))) : null);
+    };
     const renderUsers = () => {
-      const pU = users.filter(u => u.pending && matchU(u)), aU = users.filter(u => !u.pending && matchU(u));
+      const base = users.filter(u => !u.pending && matchU(u)), pU = users.filter(u => u.pending && matchU(u)), aU = base.filter(FILT[userFilter] || FILT.all);
       usersBox.replaceChildren();
       put(usersBox,
-    pU.length ? card('Pendientes de aprobación', el('div', { class: 'list' }, ...pU.map(r => el('div', {},
-      el('div', { class: 'l' }, el('div', {}, r.username), el('div', { class: 'mut' }, 'Se registró ' + r.created_at)),
-      el('div', { class: 'r' }, act('Aprobar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: true }), ''), ' ',
-        act('Borrar', async () => { if (!confirm('¿Borrar la cuenta ' + r.username + '?')) throw new Error('Cancelado'); await api('POST', '/api/admin/user-delete', { user_id: r.id }); }, 'red')))))) : null,
-    card('Revendedores' + (userQuery.trim() ? ` · ${aU.length} de ${users.filter(u => !u.pending).length}` : ''), aU.length ? el('div', { class: 'list' }, ...aU.map(r => el('div', { style: 'display:block' },
-      el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-        el('div', {}, el('b', {}, r.username), ' ', r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'), OWN ? el('div', { class: 'mut' }, `Margen ${r.markup_pct}%`) : null),
-        el('div', { style: 'text-align:right;font-weight:800;line-height:1.35' }, ...CURS.map(c => el('div', { style: c === 'usdt' ? 'font-size:1.1rem' : 'font-size:.9rem' }, money((r.balances || { usdt: r.balance })[c] || 0, c))))),
-      el('div', { class: 'acts' },
-        ...(can('ajustar') ? CURS : []).map(c => act('± ' + CUR_S[c], () => adjust(r, c), c === 'usdt' ? '' : 'sec')),
-        OWN && act('Margen', async () => { const a = prompt('Nuevo margen %:', r.markup_pct); if (a !== null) await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
-        OWN && act('Clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
-        act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec'))))) : el('div', { class: 'mut' }, userQuery.trim() ? 'Ningún revendedor coincide con "' + userQuery.trim() + '".' : 'Aún no tienes revendedores.')));
+        pU.length ? card('Pendientes de aprobación', el('div', { class: 'list' }, ...pU.map(r => el('div', {},
+          el('div', { class: 'l' }, el('div', {}, r.username), el('div', { class: 'mut' }, 'Se registró ' + r.created_at)),
+          el('div', { class: 'r' }, act('Aprobar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: true }), ''), ' ',
+            act('Borrar', async () => { if (!confirm('¿Borrar la cuenta ' + r.username + '?')) throw new Error('Cancelado'); await api('POST', '/api/admin/user-delete', { user_id: r.id }); }, 'red')))))) : null,
+        card('Revendedores',
+          el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...FL.map(([k, l]) => el('button', { type: 'button', class: 'chip' + (userFilter === k ? ' on' : ''), onclick: () => { userFilter = k; renderUsers(); } }, `${l} (${base.filter(FILT[k]).length})`))),
+          aU.length ? el('div', { class: 'rgrid' }, ...aU.map(rbox)) : el('div', { class: 'mut' }, userQuery.trim() || userFilter !== 'all' ? 'Ningún revendedor coincide con ese filtro.' : 'Aún no tienes revendedores.')));
     };
     const sq = el('input', { type: 'search', placeholder: 'Buscar por correo o usuario…', value: userQuery, autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
     sq.addEventListener('input', () => { userQuery = sq.value; renderUsers(); });
     const searchBar = el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq,
       el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { sq.value = ''; userQuery = ''; renderUsers(); sq.focus(); } }, '✕'));
-    put(out, card('Nuevo revendedor', el('div', { class: 'row' }, nu.u, nu.p), el('div', { class: 'row' }, OWN ? nu.m : null, create),
-      el('div', { class: 'mut' }, OWN ? 'Precio para él = costo de Central One + su margen %. Así ganas el mismo porcentaje en todos los paquetes, pequeños o grandes.' : 'La cuenta se crea con el margen por defecto del dueño.'), note),
+    put(out, el('details', { class: 'card newrev', open: users.length ? null : '' }, el('summary', {}, el('h2', { style: 'margin:0' }, '＋ Nuevo revendedor'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
+      el('div', { style: 'margin-top:12px' }, el('div', { class: 'row' }, nu.u, nu.p),
+        OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, `Margen % (general: ${defM}%)`, nu.m)) : null,
+        OWN ? el('label', { class: 'chk' }, tw, el('span', {}, el('b', {}, 'Confiar en sus billeteras'), el('small', { class: 'mut', style: 'display:block' }, 'Su primera billetera USDT se registra y se abona sola.'))) : null,
+        el('div', { class: 'acts' }, create),
+        el('div', { class: 'mut', style: 'margin-top:8px' }, OWN ? `Precio para él = costo de Central One + su margen %. Si dejas el margen general (${defM}%), la cuenta sigue los cambios generales; si pones otro, queda como manual 🔒.` : 'La cuenta se crea con el margen general que puso el dueño.'), note)),
       searchBar, usersBox);
     renderUsers();
   }
@@ -949,14 +1076,22 @@ async function adminView() {
     const staff = OWN ? await api('GET', '/api/admin/staff') : [];
     let fq = '';
     const rowsBox = el('div');
+    const sortBox = el('div', { class: 'chips', style: 'margin:12px 0' });
+    const SORTS = [['usdt', '💲 Más USDT'], ['transfer', '🏦 Más CUP transf.'], ['mobile', '📱 Más CUP saldo'], ['az', 'A–Z']];
     const drawRows = () => {
-      const q = fq.trim().toLowerCase(), list = f.resellers.filter(r => !q || r.username.toLowerCase().includes(q));
-      rowsBox.replaceChildren(list.length ? el('div', { class: 'list' }, ...list.map(r => el('div', { style: 'display:block' },
-        el('div', { style: 'display:flex;justify-content:space-between;gap:10px' },
-          el('div', { class: 'l' }, el('div', {}, r.username, ' ', r.pending ? el('span', { class: 'tag off' }, 'Pendiente') : r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'))),
-          el('div', { class: 'r' }, ...CURS.map(c => el('div', { class: r.balances[c] > 0 ? '' : 'mut', style: 'white-space:nowrap' }, money(r.balances[c], c))))),
-        can('ajustar') ? el('div', { class: 'acts' }, ...CURS.map(c => act('± ' + CUR_S[c], () => adjust(r, c), c === 'usdt' ? '' : 'sec'))) : null)))
-        : el('div', { class: 'mut' }, 'Ningún revendedor coincide.'));
+      const q = fq.trim().toLowerCase();
+      let list = f.resellers.filter(r => (!q || r.username.toLowerCase().includes(q)) && (!fundOnly || CURS.some(c => r.balances[c] > 0)));
+      list = [...list].sort((a, b) => fundSort === 'az' ? a.username.localeCompare(b.username) : (b.balances[fundSort] - a.balances[fundSort]) || a.username.localeCompare(b.username));
+      sortBox.replaceChildren(...SORTS.map(([k, l]) => el('button', { type: 'button', class: 'chip' + (fundSort === k ? ' on' : ''), onclick: () => { fundSort = k; drawRows(); } }, l)),
+        el('button', { type: 'button', class: 'chip' + (fundOnly ? ' on' : ''), onclick: () => { fundOnly = !fundOnly; drawRows(); } }, 'Solo con saldo'));
+      rowsBox.replaceChildren(el('div', { class: 'mut', style: 'margin-bottom:8px' }, `${list.length} de ${f.resellers.length} revendedores`),
+        list.length ? el('div', { class: 'rgrid' }, ...list.map(r => el('div', { class: 'rbox' + (r.active ? '' : ' off') },
+          el('div', { class: 'rhead' }, el('div', { class: 'av' }, String(r.username).trim().charAt(0) || '?'),
+            el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username), r.pending || !r.active ? el('div', { class: 'tags' }, el('span', { class: 'tag off' }, r.pending ? 'Pendiente' : 'Desactivado')) : null),
+            can('ajustar') ? act('± Saldo', () => adjust(r), 'sec') : null),
+          el('div', { class: 'tiles', style: 'margin-bottom:0' }, ...CURS.map(c => el('div', { class: 'tile' + (r.balances[c] > 0 ? '' : ' zero') }, el('span', {}, CUR_ICON[c] + ' ' + CUR_S[c]),
+            el('b', {}, c === 'usdt' ? Number(r.balances[c]).toFixed(2) : Math.round(r.balances[c]).toLocaleString('es'))))))))
+          : el('div', { class: 'mut' }, 'Ningún revendedor coincide.'));
     };
     const sq = el('input', { type: 'search', placeholder: 'Buscar revendedor…', autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
     sq.addEventListener('input', () => { fq = sq.value; drawRows(); });
@@ -968,11 +1103,12 @@ async function adminView() {
         P && Number(P.available) < vend ? el('div', { class: 'msg err', style: 'margin-top:10px' }, 'Tus revendedores tienen más USDT que lo que hay en Central One: si todos compraran a la vez, no alcanzaría.') : null),
       card('Lo que tienen tus revendedores', el('div', { class: 'stats' }, ...CURS.map(c => el('div', { class: 'stat' }, el('span', { class: 'mut' }, CUR_ICON[c] + ' ' + CUR_LONG[c]), el('b', {}, money(f.totals[c], c)), el('span', { class: 'mut' }, `${f.with_balance[c]} de ${f.count} con saldo`)))),
         P ? el('div', { class: 'mut', style: 'margin-top:10px' }, `USDT de revendedores: ${usdt(vend)} · en Central One: ${usdt(P.available)}.`) : null),
-      card('Saldo por revendedor', el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq), rowsBox),
+      card('Saldo por revendedor', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'El USDT, la transferencia CUP y el saldo móvil CUP de cada revendedor, cada uno por separado.'), el('div', { class: 'search', style: 'margin-bottom:0' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq), sortBox, rowsBox),
       OWN ? card('Límites de tus sub-administradores', staff.length ? el('div', { class: 'list' }, ...staff.map(m => el('div', { style: 'display:block' },
         el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
           el('div', { class: 'mut' }, 'Aprobar saldo: ' + (m.perms.saldo ? `hasta ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP por aprobación` : 'sin permiso')),
           el('div', { class: 'mut' }, 'Ajustar saldo a mano: ' + (m.perms.ajustar ? `hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP por ajuste` : 'sin permiso')),
+          m.perms.ajustar ? quotaBlock(m.quota) : null,
           el('div', { class: 'mut' }, 'Ver fondos: ' + (m.perms.saldos ? 'sí' : 'no') + ' · Pedidos: ' + (m.perms.pedidos ? 'sí' : 'no') + ' · Revendedores: ' + (m.perms.revendedores ? 'sí' : 'no') + ' · 2FA: ' + (m.totp ? 'activa' : 'no'))))))
         : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.'), el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { tab = 'equipo'; adminView(); } }, 'Cambiar límites en Equipo'))) : null);
     drawRows();
@@ -983,24 +1119,49 @@ async function adminView() {
     const staff = await api('GET', '/api/admin/staff');
     const PL = [['saldo', 'Aprobar saldo', 'Ve y aprueba o rechaza solicitudes de saldo, con tope por aprobación.'], ['pedidos', 'Pedidos', 'Ve los pedidos (sin costos ni ganancias) y resuelve los \"Verificando\".'],
       ['revendedores', 'Revendedores', 'Crea cuentas, aprueba registros y activa o desactiva (sin tocar márgenes ni claves).'],
-      ['ajustar', 'Ajustar saldo a mano', 'Agrega o quita saldo USDT/CUP a un revendedor, con tope por ajuste y motivo obligatorio.'],
+      ['ajustar', 'Ajustar saldo a mano', 'Agrega o quita saldo USDT/CUP a un revendedor, con tope por ajuste, cupo total (que tú restableces) y motivo obligatorio.'],
       ['saldos', 'Ver fondos', 'Ve el saldo de Central One y el USDT/CUP de todos los revendedores.']];
     const permEditor = p => {
       const boxes = {};
       const mk = ([k, t, h]) => { const i = el('input', { type: 'checkbox' }); i.checked = !!p[k]; boxes[k] = i; return el('label', { class: 'chk' }, i, el('span', {}, el('b', {}, t), el('small', { class: 'mut', style: 'display:block' }, h))); };
       const mu = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_usdt) }), mc = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_cup) });
       const ma = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_adj_usdt) }), mb = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_adj_cup) });
+      const qu = el('input', { type: 'number', min: '0', step: '1', value: String(p.quota_usdt) }), qc = el('input', { type: 'number', min: '0', step: '1000', value: String(p.quota_cup) });
       const node = el('div', {}, ...PL.map(mk), el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por aprobación: lo que pase de aquí solo lo aprueba el dueño.'),
         el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Aprobar: máx. USDT', mu), el('label', { class: 'fld' }, 'Aprobar: máx. CUP', mc)),
         el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por cada ajuste manual de saldo:'),
-        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Ajustar: máx. USDT', ma), el('label', { class: 'fld' }, 'Ajustar: máx. CUP', mb)));
-      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, ajustar: boxes.ajustar.checked, saldos: boxes.saldos.checked, max_usdt: mu.value, max_cup: mc.value, max_adj_usdt: ma.value, max_adj_cup: mb.value }) };
+        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Ajustar: máx. USDT', ma), el('label', { class: 'fld' }, 'Ajustar: máx. CUP', mb)),
+        el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Cupo TOTAL de ajustes manuales: lo que agrega y lo que quita se va sumando. Al llegar al cupo no puede mover más hasta que tú lo restablezcas.'),
+        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Cupo total: USDT', qu), el('label', { class: 'fld' }, 'Cupo total: CUP (transf. + saldo)', qc)));
+      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, ajustar: boxes.ajustar.checked, saldos: boxes.saldos.checked, max_usdt: mu.value, max_cup: mc.value, max_adj_usdt: ma.value, max_adj_cup: mb.value, quota_usdt: qu.value, quota_cup: qc.value }) };
     };
     const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off' }), p: el('input', { type: 'password', placeholder: 'Contraseña (10+)', autocomplete: 'new-password' }) };
-    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, ajustar: false, saldos: true, max_usdt: 50, max_cup: 20000, max_adj_usdt: 20, max_adj_cup: 10000 });
+    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, ajustar: false, saldos: true, max_usdt: 50, max_cup: 20000, max_adj_usdt: 20, max_adj_cup: 10000, quota_usdt: 100, quota_cup: 50000 });
+    const team = await api('GET', '/api/admin/team-activity');
+    const teamById = new Map(team.staff.map(m => [m.id, m]));
+    const f2 = (v, c) => c === 'usdt' ? Number(v).toFixed(2) : Math.round(v).toLocaleString('es');
+    const flow = (o, c) => (o.add || o.rem) ? `${c === 'usdt' ? '💲' : c === 'transfer' ? '🏦' : '📱'} +${f2(o.add, c)} / −${f2(o.rem, c)}` : null;
     const nb = el('button', {}, 'Crear sub-administrador'), nm = el('div');
     nb.onclick = async () => { try { await api('POST', '/api/admin/staff', { username: nu.u.value, password: nu.p.value, perms: ed.get() }); adminView(); } catch (e) { msg(nm, e.message, 'err'); } };
     put(out,
+      sect('Control de saldo manual'),
+      card('Lo que mueve tu equipo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Cada vez que un sub-administrador agrega o quita saldo a mano se descuenta de su cupo y lo ves aquí, con el desglose por revendedor desde el último restablecimiento. Cuando llega a 0 no puede mover más hasta que tú restablezcas el cupo.'),
+        team.staff.filter(m => m.perms.ajustar).length ? el('div', { class: 'list' }, ...team.staff.filter(m => m.perms.ajustar).map(m => el('div', { style: 'display:block' },
+          el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px' }, el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado')), act('Restablecer cupo', () => resetQuota(m), '')),
+          quotaBlock(m.quota),
+          el('details', { class: 'regd', style: 'margin-top:10px' }, el('summary', {}, el('b', {}, `Desglose por revendedor (${m.resellers.length})`), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
+            el('div', { class: 'mut', style: 'margin-bottom:6px' }, `Desde ${m.since} UTC · formato: +agregó / −quitó`),
+            m.resellers.length ? el('div', { class: 'list' }, ...m.resellers.map(x => el('div', { style: 'display:block' }, el('b', {}, x.username),
+              el('div', { class: 'mut' }, [flow(x.usdt, 'usdt'), flow(x.transfer, 'transfer'), flow(x.mobile, 'mobile')].filter(Boolean).join('  ·  ')), el('div', { class: 'mut', style: 'font-size:.76rem' }, 'Último movimiento: ' + (x.last || '—') + ' UTC'))))
+              : el('div', { class: 'mut', style: 'padding-bottom:10px' }, 'No ha movido saldo a mano desde el último restablecimiento.'),
+            (m.approved.usdt || m.approved.transfer || m.approved.mobile) ? el('div', { class: 'mut', style: 'margin:8px 0 10px' }, `Además aprobó solicitudes de saldo por: ${[flow({ add: m.approved.usdt, rem: 0 }, 'usdt'), flow({ add: m.approved.transfer, rem: 0 }, 'transfer'), flow({ add: m.approved.mobile, rem: 0 }, 'mobile')].filter(Boolean).map(s => s.replace(' / −0.00', '').replace(' / −0', '')).join('  ·  ')} (esto no gasta el cupo).`) : null))))
+          : el('div', { class: 'mut' }, 'Ningún sub-administrador tiene el permiso "Ajustar saldo a mano". Actívalo abajo en su ficha.')),
+      card('Últimos movimientos del equipo', team.recent.length ? el('div', { class: 'list' }, ...team.recent.slice(0, 20).map(r => el('div', { style: 'display:block' },
+        el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
+          el('div', { class: 'l' }, el('div', {}, el('b', {}, r.by), r.kind === 'approval' ? ' aprobó saldo a ' : (r.amount >= 0 ? ' agregó a ' : ' quitó de '), el('b', {}, r.reseller)), r.note ? el('div', { class: 'mut' }, r.note) : null),
+          el('div', { class: 'r' }, el('div', { style: 'font-weight:800;color:' + (r.amount >= 0 ? 'var(--ok)' : '#fca5a5') }, (r.amount >= 0 ? '+' : '−') + money(Math.abs(r.amount), r.currency)), el('div', { class: 'mut', style: 'font-size:.76rem' }, r.at)))))) : el('div', { class: 'mut' }, 'Todavía no han movido saldo.'),
+        el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { auditCat = 'money'; tab = 'registro'; adminView(); } }, 'Ver todo en Registro'))),
+      sect('Sub-administradores'),
       card('Nuevo sub-administrador', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Un ayudante con acceso limitado. Todo lo que haga queda en la pestaña Registro.'),
         el('div', { class: 'row' }, nu.u, nu.p), ed.node, el('div', { class: 'acts' }, nb), nm),
       card('Tu equipo', staff.length ? el('div', { class: 'list' }, ...staff.map(m => {
@@ -1010,7 +1171,8 @@ async function adminView() {
             el('div', { class: 'mut' }, 'Último acceso: ' + (m.last_login ? m.last_login + ' UTC' + (m.last_ip ? ' · ' + m.last_ip : '') : 'nunca')),
             el('div', { class: 'chips', style: 'margin-top:6px;gap:6px' }, ...PL.filter(([k]) => m.perms[k]).map(([, t]) => el('span', { class: 'tag code' }, t)),
               m.perms.saldo ? el('span', { class: 'tag code' }, `Aprobar hasta ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP`) : null,
-              m.perms.ajustar ? el('span', { class: 'tag code' }, `Ajustar hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP`) : null,
+              m.perms.ajustar ? el('span', { class: 'tag code' }, `Ajustar hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP por vez`) : null,
+              m.perms.ajustar ? el('span', { class: 'tag code' }, `Cupo ${m.perms.quota_usdt} USDT / ${Number(m.perms.quota_cup).toLocaleString('es')} CUP`) : null,
               el('span', { class: 'tag ' + (m.totp ? 'ok' : 'off') }, m.totp ? '2FA activa' : 'Sin 2FA'))),
           el('details', { class: 'regd' }, el('summary', {}, el('b', {}, 'Editar permisos'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')), pe.node,
             el('div', { class: 'acts', style: 'margin-bottom:10px' }, act('Guardar permisos', () => api('POST', '/api/admin/staff-update', { user_id: m.id, perms: pe.get() }), ''))),
@@ -1020,7 +1182,7 @@ async function adminView() {
             m.totp ? act('Quitar 2FA', async () => { if (!confirm('¿Quitar la verificación en dos pasos de ' + m.username + '? Tendrá que activarla otra vez.')) throw new Error('Cancelado'); await api('POST', '/api/admin/staff-update', { user_id: m.id, reset_2fa: true }); }) : null,
             act(m.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/staff-update', { user_id: m.id, active: !m.active }), m.active ? 'red' : 'sec')));
       })) : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.')),
-      card('Qué NO puede hacer nunca un sub-administrador', el('div', { class: 'mut' }, 'Ver costos, ganancias o reportes · tocar el catálogo, los precios o los ajustes · ajustar saldos a mano · cambiar márgenes o contraseñas de revendedores · confiar en billeteras · descargar respaldos · ver el registro o crear otros sub-admins. Si intenta algo que no puede, queda anotado como \"Negado\".')),
+      card('Qué NO puede hacer nunca un sub-administrador', el('div', { class: 'mut' }, 'Ver costos, ganancias, ventas o reportes · tocar el catálogo, los precios o los ajustes · ajustar saldos a mano más allá de su permiso, tope y cupo · cambiar márgenes (general o de una cuenta) o contraseñas de revendedores · confiar en billeteras · descargar respaldos · ver el registro o crear otros sub-admins. Si intenta algo que no puede, queda anotado como \"Negado\".')),
       (() => {
         const bx = el('input', { type: 'checkbox' }); bx.checked = !!Number(st.settings.require_2fa || 0);
         return card('Seguridad del equipo', el('label', { class: 'chk' }, bx, el('span', {}, el('b', {}, 'Exigir verificación en dos pasos a los sub-admins'), el('small', { class: 'mut', style: 'display:block' }, 'Quien no la tenga activa solo podrá entrar a "Mi cuenta" hasta activarla.'))),
@@ -1034,7 +1196,8 @@ async function adminView() {
     const rows = await api('GET', '/api/admin/audit?cat=' + auditCat + '&limit=500');
     const ROLE_L = { admin: 'Dueño', subadmin: 'Sub-admin', reseller: 'Revendedor', visitante: 'Visitante' };
     const KEY_L = { amount: 'monto', currency: 'moneda', markup_pct: 'margen %', min_margin: 'ganancia mín.', active: 'activo', approve: 'aprobar', trust_wallet: 'confiar billetera', note: 'nota', outcome: 'resultado',
-      family: 'juego', variant: 'región', method: 'método', amount_cup: 'CUP', product_id: 'producto', username: 'usuario', hash: 'hash' };
+      family: 'juego', variant: 'región', method: 'método', amount_cup: 'CUP', product_id: 'producto', username: 'usuario', hash: 'hash',
+      markup_auto: 'margen vuelve a automático', trust_wallets: 'confiar billeteras', trust_new_wallets: 'confiar billeteras (cuentas nuevas)', reset_quota: 'cupo restablecido', default_markup: 'margen general' };
     const listBox = el('div');
     const renderAudit = () => {
       const q = auditQ.trim().toLowerCase();
@@ -1066,13 +1229,14 @@ async function adminView() {
     put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, ME.username), ' · Sub-administrador'),
       el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes: ' + (Object.keys(PN).filter(k => can(k)).map(k => PN[k]).join(', ') || 'nada por ahora') + '.'),
       can('saldo') ? el('div', { class: 'mut' }, `Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`) : null,
-      can('ajustar') ? el('div', { class: 'mut' }, `Tu límite por ajuste manual: ${ME.perms.max_adj_usdt} USDT / ${Number(ME.perms.max_adj_cup).toLocaleString('es')} CUP (con motivo obligatorio).`) : null,
+      can('ajustar') ? el('div', { class: 'mut' }, `Tu límite por ajuste manual: ${ME.perms.max_adj_usdt} USDT / ${Number(ME.perms.max_adj_cup).toLocaleString('es')} CUP por vez (con motivo obligatorio).`) : null,
+      can('ajustar') && ME.quota ? el('div', { style: 'margin-top:10px' }, el('div', { class: 'mut' }, 'Tu cupo total de ajustes manuales (agregar y quitar suman; el dueño lo restablece):'), quotaBlock(ME.quota)) : null,
       el('div', { class: 'mut' }, 'Todo lo que haces queda registrado.')), ...accountCards(true));
   }
 
   if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab) || (tab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) {
     // el admin tiene campos ya rellenos: solo se pausa si está escribiendo, mirando una foto o con una ventana abierta
-    const busy = () => { const a = document.activeElement; return (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || Date.now() - lastTyping < 60000 || !!document.querySelector('.zoom, img.proof'); };
+    const busy = () => { const a = document.activeElement; return (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || Date.now() - lastTyping < 60000 || !!document.querySelector('.zoom, img.proof, .modal'); };
     const tick = () => { if (busy()) timer = setTimeout(tick, 10000); else adminView().catch(() => { timer = setTimeout(tick, 20000); }); };
     timer = setTimeout(tick, 10000);
   }
