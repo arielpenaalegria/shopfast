@@ -118,3 +118,17 @@ La base es MongoDB: así los datos sobreviven a reinicios y despliegues aunque R
 `ADMIN_USERNAME` y `ADMIN_PASSWORD` solo se usan **el primer arranque** y solo si la clave tiene **10 o más caracteres**: si es más corta no se crea el admin, y si ya existía, cambiarla en Render no la cambia.
 Salida de emergencia: en Render → Environment agrega `RESET_PASSWORD_FOR` (tu usuario) y `RESET_PASSWORD_TO` (clave nueva, 10+), guarda y espera el reinicio.
 Entra con esa clave y **borra las dos variables**. Si no existía ningún admin, lo crea. Para perder el 2FA usa `RESET_2FA_FOR=tu_usuario`.
+
+## Control de equipo, márgenes y ranking (última versión)
+- **Cupo de ajustes manuales por sub-admin** (Equipo): además del tope por ajuste, cada sub-admin tiene un **cupo total** en USDT y en CUP
+  (transferencia + saldo móvil suman en el mismo cupo). Todo lo que **agrega o quita** a mano se va sumando; al llegar al cupo no puede mover más
+  hasta que tú pulses **Restablecer cupo**. Él ve cuánto le queda antes de confirmar; tú ves el cupo usado/restante, el **desglose por revendedor**
+  (+agregó / −quitó) desde el último restablecimiento y los últimos movimientos (también en Resumen). Aprobar solicitudes de saldo NO gasta este cupo.
+  Al llegar al límite te avisa Telegram. Valores por defecto: 100 USDT y 50.000 CUP (cámbialos en la ficha de cada sub-admin).
+- **Confiar en billeteras**: por revendedor (Revendedores → Más opciones) y como ajuste para cuentas nuevas (Ajustes → Registro). Con esto activo, la primera
+  billetera USDT desde la que pague se registra y se abona sola. Una billetera ya asociada a otro revendedor nunca se abona sola.
+- **Margen general** (Ajustes): un % para las cuentas nuevas y para todas las ya registradas. Las cuentas con **margen manual 🔒**
+  (el que pones con "Cambiar margen", o al crear la cuenta con un margen distinto al general) **no cambian** con el margen general;
+  solo tú las cambias, o las devuelves a automático. Al actualizar, las cuentas que ya tenían un margen distinto al general quedan marcadas como manuales (se hace una sola vez).
+- **Ventas → Quién vende más**: ranking por cantidad de recargas (hoy / semana / mes / todo). **Fondos**: USDT, transferencia CUP y saldo móvil CUP de cada revendedor por separado, con orden y filtro.
+- Interfaz reorganizada: Resumen más corto, nueva pestaña **Ajustes**, tarjetas por revendedor y ventana propia para agregar/quitar saldo.

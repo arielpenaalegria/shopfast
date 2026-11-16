@@ -58,8 +58,9 @@ function priceIn(usdtCents, cur, st) {
   if (!(rate > 0)) return null;
   return Math.ceil(Math.round(usdtCents * rate * 1000) / 100000) * 100;
 }
-const ledger = async (s, uid, cents, type, ref, note, cur = 'usdt') =>
-  C.ledger.insertOne({ _id: await nextId('ledger', s), user_id: uid, amount_cents: cents, currency: curOf(cur), type, ref: ref ?? null, note: note ?? null, created_at: now() }, { session: s });
+// by = id del sub-admin que hizo el movimiento a mano (para el control de cupos del dueño)
+const ledger = async (s, uid, cents, type, ref, note, cur = 'usdt', by = null) =>
+  C.ledger.insertOne({ _id: await nextId('ledger', s), user_id: uid, amount_cents: cents, currency: curOf(cur), type, ref: ref ?? null, note: note ?? null, created_at: now(), ...(by ? { by_id: by } : {}) }, { session: s });
 const addBalance = (s, uid, delta, cur = 'usdt') => C.users.updateOne({ _id: uid }, { $inc: { [CUR[curOf(cur)]]: delta } }, { session: s });
 /** Descuenta saldo solo si alcanza. Devuelve true/false. */
 const takeBalance = async (s, uid, cents, cur = 'usdt') => {
@@ -84,6 +85,7 @@ const SETTINGS = {
   payment_mobile: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },   // datos de pago saldo móvil
   registration: { def: 'approval', check: v => ['off', 'approval', 'open'].includes(v), cast: String },
   default_markup: { def: 10, check: v => Number(v) >= 0 && Number(v) <= 100, cast: Number },
+  trust_new_wallets: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // las cuentas nuevas nacen con "confiar en sus billeteras"
   announcement: { def: '', check: v => String(v).length <= 500, cast: v => String(v).trim() },
   require_2fa: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // exigir 2FA a sub-admins
   auto_backup: { def: 1, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // respaldo semanal a Telegram
@@ -110,7 +112,15 @@ const STAFF_PERM = {
 function normPerms(p = {}) {
   const n = (v, d, max) => { const x = Number(v); return Number.isFinite(x) && x >= 0 ? Math.min(x, max) : d; };
   return { revendedores: !!p.revendedores, saldo: !!p.saldo, pedidos: !!p.pedidos, ajustar: !!p.ajustar, saldos: p.saldos === undefined ? true : !!p.saldos,
-    max_usdt: n(p.max_usdt, 50, 100000), max_cup: n(p.max_cup, 20000, 10000000), max_adj_usdt: n(p.max_adj_usdt, 20, 100000), max_adj_cup: n(p.max_adj_cup, 10000, 10000000) };
+    max_usdt: n(p.max_usdt, 50, 100000), max_cup: n(p.max_cup, 20000, 10000000), max_adj_usdt: n(p.max_adj_usdt, 20, 100000), max_adj_cup: n(p.max_adj_cup, 10000, 10000000),
+    // Cupo TOTAL de ajustes manuales (suma de lo que agrega + lo que quita) hasta que el dueño lo restablezca
+    quota_usdt: n(p.quota_usdt, 100, 10000000), quota_cup: n(p.quota_cup, 50000, 1000000000) };
+}
+/** Cupo de ajustes manuales de un sub-admin: límite, usado y lo que le queda (USDT y CUP; el CUP suma transferencia + saldo móvil). */
+function quotaOf(u) {
+  const p = normPerms(u.perms || {}), uu = (u.adj_used_usdt_c || 0) / 100, uc = (u.adj_used_cup_c || 0) / 100;
+  return { usdt: { limit: p.quota_usdt, used: uu, left: Math.max(0, p.quota_usdt - uu) }, cup: { limit: p.quota_cup, used: uc, left: Math.max(0, p.quota_cup - uc) },
+    reset_at: u.quota_reset_at ? fmt(u.quota_reset_at) : null };
 }
 const AUDIT_LABEL = {
   '/api/login': 'Inicio de sesión', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
@@ -123,11 +133,11 @@ const AUDIT_LABEL = {
   '/api/2fa/start': 'Activación de 2FA iniciada', '/api/2fa/confirm': '2FA activada', '/api/2fa/disable': '2FA desactivada', '/api/logout-all': 'Sesiones cerradas en todos los dispositivos',
   '/api/admin/backup-send': 'Respaldo enviado a Telegram', '/api/admin/restore': 'Respaldo restaurado', '/api/admin/rates-confirm': 'Tasas CUP confirmadas como vigentes',
   '/api/forgot': 'Pidió recuperar su contraseña', '/api/reset-password': 'Contraseña restablecida con código',
-  '/api/admin/staff': 'Sub-admin creado', '/api/admin/staff-update': 'Sub-admin modificado', '/api/admin/backup': 'Respaldo descargado', '/api/admin/audit.csv': 'Registro descargado (CSV)',
+  '/api/admin/markup-all': 'Margen general aplicado a las cuentas', '/api/admin/staff': 'Sub-admin creado', '/api/admin/staff-update': 'Sub-admin modificado', '/api/admin/backup': 'Respaldo descargado', '/api/admin/audit.csv': 'Registro descargado (CSV)',
 };
 const AUDIT_SKIP = new Set(['/api/logout', '/api/validate', '/api/telegram-link', '/api/telegram-unlink']);
 const AUDIT_GET = new Set(['/api/admin/backup', '/api/admin/audit.csv']);
-const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'reset_2fa', 'revoke', 'mode', 'maintenance', 'dry_run'];
+const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'reset_2fa', 'revoke', 'mode', 'maintenance', 'dry_run', 'markup_auto', 'trust_wallets', 'trust_new_wallets', 'reset_quota'];
 const PWD_PATHS = new Set(['/api/change-password', '/api/admin/users', '/api/admin/user-update', '/api/admin/staff', '/api/admin/staff-update', '/api/reset-password']);
 const GATE_OK = new Set(['/api/me', '/api/me-extra', '/api/2fa/start', '/api/2fa/confirm', '/api/logout', '/api/logout-all', '/api/change-password']);
 function dateRange(from, to) {
@@ -256,6 +266,7 @@ route('POST', '/api/reset-password', null, async (req, res, _u, b) => {
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
   send(res, 200, { username: u.username, role: u.role, perms: u.perms || null, totp: !!u.totp_on, must_2fa: u.role === 'subadmin' && !u.totp_on && !!st.require_2fa, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
+    quota: u.role === 'subadmin' ? quotaOf(u) : null,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
     announcement: st.announcement, maintenance: st.maintenance ? { msg: maintMsg(st) } : null });
@@ -277,7 +288,7 @@ route('POST', '/api/register', null, async (req, res, _u, b) => {
   const open = st.registration === 'open';
   try {
     await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(pw), role: 'reseller',
-      balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
+      balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, markup_manual: 0, trust_wallets: st.trust_new_wallets ? 1 : 0, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
   } catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ya existe una cuenta con ese correo' }); throw e; }
   TG.notifyAdmins(`🆕 Nuevo revendedor registrado: ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
   send(res, 201, { ok: true, active: open, message: open ? 'Cuenta creada. Ya puedes entrar.' : 'Cuenta creada. El administrador debe aprobarla antes de que puedas entrar.' });
@@ -564,22 +575,25 @@ route('GET', '/api/ledger.csv', 'reseller', async (req, res, u) => sendCsv(res, 
 // --- Admin ---
 route('GET', '/api/admin/users', 'staff', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
-    .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
+    .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, markup_manual: !!u.markup_manual, trust_wallets: !!u.trust_wallets, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
 
 route('POST', '/api/admin/users', 'staff', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
-  const markup = _u.role === 'subadmin' ? Number((await getSettings()).default_markup || 0) : Number(b.markup_pct ?? 0);
+  const st = await getSettings(), def = Number(st.default_markup || 0);
+  const markup = _u.role === 'subadmin' ? def : Number(b.markup_pct ?? def);
   if (!/^[\w.-]{3,30}$/.test(username)) return send(res, 400, { error: 'Usuario: 3-30 letras, números, . _ -' });
   if (pw.length < 8) return send(res, 400, { error: 'La contraseña debe tener 8+ caracteres' });
   if (!(markup >= 0 && markup <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
-  try { await createUser(username, A.hashPassword(pw), 'reseller', markup); }
+  // Si el dueño escribe un margen distinto al general, queda como MANUAL (el cambio general no lo toca). Igual al general = automático.
+  const extra = { markup_manual: markup !== def ? 1 : 0, trust_wallets: _u.role === 'admin' && b.trust_wallets !== undefined ? (b.trust_wallets ? 1 : 0) : (st.trust_new_wallets ? 1 : 0) };
+  try { await createUser(username, A.hashPassword(pw), 'reseller', markup, extra); }
   catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ese usuario ya existe' }); throw e; }
   send(res, 201, { ok: true });
 });
 
-async function createUser(username, hash, role, markup = 0) {
+async function createUser(username, hash, role, markup = 0, extra = {}) {
   return C.users.insertOne({ _id: await nextId('users'), username, username_lc: username.toLowerCase(), password_hash: hash, role,
-    balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: markup, active: 1, created_at: now() });
+    balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: markup, active: 1, created_at: now(), ...extra });
 }
 
 route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
@@ -591,21 +605,33 @@ route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
     if (String(b.note || '').trim().length < 3) return send(res, 400, { error: 'Escribe el motivo del ajuste (mínimo 3 letras): queda en el registro.' });
     if (cur !== 'usdt' && cents % 100) return send(res, 400, { error: 'El monto en CUP debe ser entero' });
   }
+  const sub = admin.role === 'subadmin', qf = cur === 'usdt' ? 'adj_used_usdt_c' : 'adj_used_cup_c';
+  let quota = null;
   try {
     await withTx(async s => {
       const t = await C.users.findOne({ _id: uid, role: 'reseller' }, { session: s });
       if (!t) throw httpErr(404, 'Usuario no encontrado');
       const f = CUR[cur];
+      // Cupo acumulado del sub-admin: lo que agrega y lo que quita se va sumando hasta que el dueño lo restablezca.
+      if (sub) {
+        const me = await C.users.findOne({ _id: admin.id }, { session: s }), qt = quotaOf(me || {}), q = cur === 'usdt' ? qt.usdt : qt.cup;
+        if (Math.abs(cents) > Math.round(q.left * 100))
+          throw httpErr(403, q.left <= 0 ? `Llegaste al límite de ajustes manuales (${fmtCur(q.limit * 100, cur)}). El dueño debe restablecerlo para que sigas.`
+            : `Te quedan ${fmtCur(Math.round(q.left * 100), cur)} de tu límite de ajustes manuales y este movimiento es de ${fmtCur(Math.abs(cents), cur)}. Pide al dueño que lo restablezca.`);
+        await C.users.updateOne({ _id: admin.id }, { $inc: { [qf]: Math.abs(cents) } }, { session: s });
+        quota = quotaOf({ ...me, [qf]: (me[qf] || 0) + Math.abs(cents) });
+      }
       const ch = await C.users.updateOne(cents > 0 ? { _id: uid } : { _id: uid, [f]: { $gte: -cents } }, { $inc: { [f]: cents } }, { session: s }); // abonar siempre funciona aunque el campo aún no exista
       if (!ch.matchedCount) throw httpErr(400, `El saldo en ${CUR_L[cur]} quedaría negativo`);
-      await ledger(s, uid, cents, cents > 0 ? 'topup' : 'adjust', null, String(b.note || '').slice(0, 200) || `Por ${admin.username}`, cur);
+      await ledger(s, uid, cents, cents > 0 ? 'topup' : 'adjust', null, String(b.note || '').slice(0, 200) || `Por ${admin.username}`, cur, sub ? admin.id : null);
     });
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
-  if (admin.role === 'subadmin') {
-    const t = await C.users.findOne({ _id: uid });
-    TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${cents > 0 ? 'AGREGÓ' : 'QUITÓ'} ${fmtCur(Math.abs(cents), cur)} ${cents > 0 ? 'a' : 'de'} ${t ? t.username : '#' + uid}\nMotivo: ${String(b.note || '').slice(0, 120)}`).catch(() => {});
+  if (sub) {
+    const t = await C.users.findOne({ _id: uid }), q = quota && (cur === 'usdt' ? quota.usdt : quota.cup);
+    TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${cents > 0 ? 'AGREGÓ' : 'QUITÓ'} ${fmtCur(Math.abs(cents), cur)} ${cents > 0 ? 'a' : 'de'} ${t ? t.username : '#' + uid}\nMotivo: ${String(b.note || '').slice(0, 120)}`
+      + (q ? `\nLe quedan ${fmtCur(Math.round(q.left * 100), cur)} de su límite${q.left <= 0 ? ' (LLEGÓ AL LÍMITE: restablécelo en Equipo para que siga)' : ''}.` : '')).catch(() => {});
   }
-  send(res, 200, { ok: true });
+  send(res, 200, { ok: true, quota });
 });
 
 // Borrar una cuenta (solo si nunca compró ni tiene saldo: p. ej. registros falsos o rechazados)
@@ -619,15 +645,17 @@ route('POST', '/api/admin/user-delete', 'staff', async (req, res, _u, b) => {
 });
 
 route('POST', '/api/admin/user-update', 'staff', async (req, res, _u, b) => {
-  if (_u.role === 'subadmin' && (b.markup_pct !== undefined || b.min_margin !== undefined || b.password)) return send(res, 403, { error: 'Solo el dueño puede cambiar margen, ganancia mínima o contraseñas.' });
+  if (_u.role === 'subadmin' && (b.markup_pct !== undefined || b.markup_auto !== undefined || b.trust_wallets !== undefined || b.min_margin !== undefined || b.password)) return send(res, 403, { error: 'Solo el dueño puede cambiar margen, billeteras de confianza, ganancia mínima o contraseñas.' });
   const uid = Number(b.user_id), f = { _id: uid, role: 'reseller' };
   const set = {};
   if (b.active !== undefined) { set.active = b.active ? 1 : 0; if (b.active) set.pending_approval = 0; }
   if (b.markup_pct !== undefined) {
     const m = Number(b.markup_pct);
     if (!(m >= 0 && m <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
-    set.markup_pct = m;
+    set.markup_pct = m; set.markup_manual = 1; // margen puesto a mano: el cambio general ya no lo toca
   }
+  if (b.markup_auto) { set.markup_pct = Number((await getSettings()).default_markup || 0); set.markup_manual = 0; } // vuelve a seguir el margen general
+  if (b.trust_wallets !== undefined) set.trust_wallets = b.trust_wallets ? 1 : 0;
   if (b.min_margin !== undefined) {
     const c = toCents(b.min_margin);
     if (!(c >= 0 && c <= 100000)) return send(res, 400, { error: 'Ganancia mínima inválida' });
@@ -896,7 +924,12 @@ async function verifyDeposit(id) {
     }
     // Pago válido en la blockchain
     const chain = { from: r.from, cents: r.cents, block: r.block };
-    const w = await C.wallets.findOne({ _id: r.from });
+    let w = await C.wallets.findOne({ _id: r.from }), autoTrusted = false;
+    // Si el dueño activó "confiar en billeteras" para este revendedor, su primera billetera nueva se registra y se abona sola.
+    if (!w && u && u.trust_wallets) {
+      try { await C.wallets.insertOne({ _id: r.from, user_id: t.user_id, created_at: now(), by: 'auto' }); w = { user_id: t.user_id }; autoTrusted = true; }
+      catch (e) { if (!isDup(e)) throw e; w = await C.wallets.findOne({ _id: r.from }); }
+    }
     if (w && w.user_id === t.user_id) {
       const done = await withTx(async s => {
         const ch = await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: { status: 'approved', approved_cents: r.cents, chain, verify: 'ok',
@@ -908,7 +941,7 @@ async function verifyDeposit(id) {
       });
       if (done) {
         TG.notifyUser(t.user_id, `✅ Pago verificado: se te abonaron ${(r.cents / 100).toFixed(2)} USDT (solicitud #${id}).`).catch(() => {});
-        TG.notifyAdmins(`✅ Depósito automático #${id}: ${u.username} +${(r.cents / 100).toFixed(2)} USDT desde ${short(r.from)}`).catch(() => {});
+        TG.notifyAdmins(`✅ Depósito automático #${id}: ${u.username} +${(r.cents / 100).toFixed(2)} USDT desde ${short(r.from)}` + (autoTrusted ? '\n🔓 Billetera nueva registrada como de confianza (tiene activado "confiar en sus billeteras").' : '')).catch(() => {});
       }
       return 'approved';
     }
@@ -976,7 +1009,7 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
       await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
       if (approve) {
         await addBalance(s, t.user_id, cents, cur);
-        await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`, cur);
+        await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`, cur, admin.role === 'subadmin' ? admin.id : null);
       }
       return { user_id: t.user_id, cents, cur, from: t.chain ? t.chain.from : null };
     });
@@ -993,7 +1026,7 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
 });
 route('GET', '/api/admin/wallets', 'admin', async (req, res) => {
   const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
-  send(res, 200, (await C.wallets.find({}).sort({ created_at: -1 }).toArray()).map(w => ({ address: w._id, username: us.get(w.user_id), created_at: fmt(w.created_at) })));
+  send(res, 200, (await C.wallets.find({}).sort({ created_at: -1 }).toArray()).map(w => ({ address: w._id, username: us.get(w.user_id), created_at: fmt(w.created_at), auto: w.by === 'auto' })));
 });
 route('POST', '/api/admin/wallet-remove', 'admin', async (req, res, _u, b) => {
   await C.wallets.deleteOne({ _id: String(b.address || '').toLowerCase() }); send(res, 200, { ok: true });
@@ -1005,6 +1038,7 @@ route('GET', '/api/admin/report', 'admin', async (req, res) => {
   const d = new Date(); d.setUTCHours(0, 0, 0, 0);
   if (period === 'week') d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); // lunes
   if (period === 'month') d.setUTCDate(1);
+  if (period === 'all') d.setTime(0);
   const rows = await C.orders.find({ status: 'completed', created_at: { $gte: d } }).toArray();
   const users = new Map((await C.users.find({ role: 'reseller' }).toArray()).map(u => [u._id, u.username]));
   const by = new Map(), prod = new Map();
@@ -1024,6 +1058,8 @@ route('GET', '/api/admin/report', 'admin', async (req, res) => {
   const c2 = v => v / 100;
   send(res, 200, { from: fmt(d), count: rows.length, sold: c2(sold), cost: c2(cost), profit: c2(sold - cost),
     resellers: [...by.values()].sort((a, b) => b.profit - a.profit).map(x => ({ ...x, sold: c2(x.sold), profit: c2(x.profit) })),
+    // Ranking: quién vende más recargas (por cantidad; si empatan, por monto vendido)
+    ranking: [...by.values()].sort((a, b) => b.count - a.count || b.sold - a.sold).map(x => ({ username: x.username, count: x.count, sold: c2(x.sold), share: rows.length ? Math.round(x.count / rows.length * 1000) / 10 : 0 })),
     products: [...prod.values()].sort((a, b) => b.profit - a.profit).slice(0, 10).map(x => ({ ...x, profit: c2(x.profit) })),
     daily: [...days].map(([day, p]) => ({ day, profit: c2(p) })) });
 });
@@ -1043,6 +1079,16 @@ route('POST', '/api/admin/settings', 'admin', async (req, res, _u, b) => {
   }
   if (b.rate_transfer !== undefined || b.rate_mobile !== undefined) await kvSet('rates_updated', new Date().toISOString());
   send(res, 200, { ok: true });
+});
+// Margen general: se guarda como margen de las cuentas nuevas y se aplica a TODAS las cuentas "automáticas".
+// Las cuentas con margen puesto a mano (markup_manual) no se tocan: solo el dueño las cambia, una por una.
+route('POST', '/api/admin/markup-all', 'admin', async (req, res, _u, b) => {
+  const m = Number(String(b.markup_pct ?? '').replace(',', '.'));
+  if (!(m >= 0 && m <= 100) || b.markup_pct === '' || b.markup_pct == null) return send(res, 400, { error: 'Margen entre 0 y 100' });
+  await kvSet('set_default_markup', m);
+  const r = await C.users.updateMany({ role: 'reseller', markup_manual: { $ne: 1 } }, { $set: { markup_pct: m, markup_manual: 0 } });
+  const skipped = await C.users.countDocuments({ role: 'reseller', markup_manual: 1 });
+  send(res, 200, { ok: true, markup_pct: m, applied: r.matchedCount, skipped });
 });
 route('POST', '/api/admin/rates-confirm', 'admin', async (req, res) => { await kvSet('rates_updated', new Date().toISOString()); await kvSet('rates_alert_at', 0); send(res, 200, { ok: true }); });
 
@@ -1112,7 +1158,33 @@ route('GET', '/api/admin/funds', 'staff', async (req, res) => {
 // --- Equipo (sub-administradores) y registro de actividad: solo el dueño ---
 route('GET', '/api/admin/staff', 'admin', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'subadmin' }).sort({ _id: -1 }).toArray()).map(u => ({ id: u._id, username: u.username, active: !!u.active,
-    totp: !!u.totp_on, perms: normPerms(u.perms || {}), last_login: fmt(u.last_login), last_ip: u.last_ip || null, created_at: fmt(u.created_at) }))));
+    totp: !!u.totp_on, perms: normPerms(u.perms || {}), quota: quotaOf(u), last_login: fmt(u.last_login), last_ip: u.last_ip || null, created_at: fmt(u.created_at) }))));
+
+// Control del dueño sobre lo que mueven los sub-admins: cupo usado/restante y desglose por revendedor desde el último restablecimiento.
+route('GET', '/api/admin/team-activity', 'admin', async (req, res) => {
+  const staff = await C.users.find({ role: 'subadmin' }).sort({ _id: -1 }).toArray();
+  const us = new Map((await C.users.find({}).toArray()).map(u => [u._id, u.username]));
+  const out = [];
+  for (const m of staff) {
+    const since = m.quota_reset_at || m.created_at || new Date(0);
+    const rows = await C.ledger.find({ by_id: m._id, created_at: { $gte: since } }).sort({ _id: -1 }).toArray();
+    const by = new Map(), appr = { usdt: 0, transfer: 0, mobile: 0 };
+    for (const r of rows) {
+      const cur = curOf(r.currency);
+      if (r.ref) { if (r.amount_cents > 0) appr[cur] += r.amount_cents; continue; } // aprobación de solicitud (ref req-N)
+      const x = by.get(r.user_id) || { username: us.get(r.user_id) || '#' + r.user_id, usdt: { add: 0, rem: 0 }, transfer: { add: 0, rem: 0 }, mobile: { add: 0, rem: 0 }, last: null };
+      x[cur][r.amount_cents > 0 ? 'add' : 'rem'] += Math.abs(r.amount_cents); if (!x.last) x.last = fmt(r.created_at);
+      by.set(r.user_id, x);
+    }
+    const c2 = o => ({ add: o.add / 100, rem: o.rem / 100 });
+    out.push({ id: m._id, username: m.username, active: !!m.active, perms: normPerms(m.perms || {}), quota: quotaOf(m), since: fmt(since),
+      resellers: [...by.values()].map(x => ({ username: x.username, usdt: c2(x.usdt), transfer: c2(x.transfer), mobile: c2(x.mobile), last: x.last })),
+      approved: { usdt: appr.usdt / 100, transfer: appr.transfer / 100, mobile: appr.mobile / 100 } });
+  }
+  const recent = (await C.ledger.find({ by_id: { $ne: null } }).sort({ _id: -1 }).limit(40).toArray()).map(r => ({
+    at: fmt(r.created_at), by: us.get(r.by_id) || '#' + r.by_id, reseller: us.get(r.user_id) || '#' + r.user_id, amount: r.amount_cents / 100, currency: curOf(r.currency), kind: r.ref ? 'approval' : 'manual', note: r.note }));
+  send(res, 200, { staff: out, recent });
+});
 route('POST', '/api/admin/staff', 'admin', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
   if (!/^[\w.-]{3,30}$/.test(username)) return send(res, 400, { error: 'Usuario: 3-30 letras, números, . _ -' });
@@ -1126,6 +1198,7 @@ route('POST', '/api/admin/staff-update', 'admin', async (req, res, _u, b) => {
   if (!(await C.users.findOne(f))) return send(res, 404, { error: 'Sub-admin no encontrado' });
   if (b.active !== undefined) set.active = b.active ? 1 : 0;
   if (b.perms) set.perms = normPerms(b.perms);
+  if (b.reset_quota) Object.assign(set, { adj_used_usdt_c: 0, adj_used_cup_c: 0, quota_reset_at: now() }); // el dueño restablece el cupo de ajustes manuales
   if (b.password) { if (String(b.password).length < 10) return send(res, 400, { error: 'Contraseña de 10+ caracteres' }); set.password_hash = A.hashPassword(String(b.password)); }
   if (b.reset_2fa) Object.assign(set, { totp_on: 0, totp_secret: null, totp_recovery: [], totp_pending: null });
   const upd = {}; if (Object.keys(set).length) upd.$set = set; if (b.password || b.revoke || b.reset_2fa) upd.$inc = { sv: 1 }; // sube la versión: sus sesiones abiertas dejan de valer
@@ -1468,8 +1541,19 @@ async function envResetPassword() {
   try { await C.audit.insertOne({ _id: await nextId('audit'), at: now(), actor: 'sistema', actor_id: null, role: 'sistema', action: 'reset-password', label: 'Contraseña restablecida por RESET_PASSWORD_FOR', target: u.username, detail: {}, ok: true, status: 200, ip: null }); } catch {}
 }
 
+/** Una sola vez: las cuentas que ya existían con un margen distinto al general se marcan como "manual" (así el primer cambio general no les pisa lo que pusiste a mano).
+ *  Las que tienen el mismo margen que el general quedan automáticas. Puedes corregir cualquiera desde Revendedores → Más opciones. */
+async function migrateMarkup() {
+  if (await kvGet('markup_manual_v1')) return;
+  const def = Number((await getSettings()).default_markup || 0);
+  await C.users.updateMany({ role: 'reseller', markup_manual: { $exists: false }, markup_pct: { $ne: def } }, { $set: { markup_manual: 1 } });
+  await C.users.updateMany({ role: 'reseller', markup_manual: { $exists: false } }, { $set: { markup_manual: 0 } });
+  await kvSet('markup_manual_v1', '1');
+}
+
 (async () => {
   await connect();
+  await migrateMarkup();
   await bootstrapAdmin();
   await envResetPassword();
   await envReset2fa();

@@ -28,6 +28,7 @@ async function connect() {
   await C.orders.createIndex({ user_id: 1, _id: -1 });
   await C.orders.createIndex({ status: 1 });
   await C.ledger.createIndex({ user_id: 1, _id: -1 });
+  await C.ledger.createIndex({ by_id: 1, _id: -1 });
   await C.topup_requests.createIndex({ user_id: 1, _id: -1 });
   await C.topup_requests.createIndex({ tx_hash: 1 }, { unique: true, partialFilterExpression: { tx_hash: { $type: 'string' } } });
   await C.topup_requests.createIndex({ status: 1, verify: 1 });
