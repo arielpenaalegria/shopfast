@@ -1,5 +1,5 @@
 'use strict';
-document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -43,6 +43,8 @@ let hsub = 'recargas', myOrdF = { status: '', q: '', from: '', to: '' }, myLedF 
 let ordF = { status: '', q: '', from: '', to: '' }, reqF = { status: '', method: '', q: '', from: '', to: '' };
 const qs = o => Object.entries(o).filter(([, v]) => v !== '' && v != null).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
 const hasF = F => Object.values(F).some(v => v);
+/** Resume los límites de un sub-admin en las 3 monedas: "💲 50 USDT · 🏦 20.000 CUP transf. · 📱 10.000 CUP saldo". pre = 'max_' | 'max_adj_' | 'quota_' */
+const limLine = (p, pre) => CURS.map(c => CUR_ICON[c] + ' ' + money(p[pre + c] || 0, c)).join(' · ');
 let payCur = 'usdt'; try { payCur = localStorage.getItem('payCur') || 'usdt'; } catch {}
 const METHOD_L = { usdt: 'USDT BEP20', transfer: 'Transferencia', mobile: 'Saldo móvil' };
 
@@ -463,11 +465,13 @@ async function resellerView() {
 
     if (method === 'usdt') {
       const hash = el('input', { placeholder: 'Hash de la transacción (0x…)', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' });
-      const amount = el('input', { type: 'number', inputmode: 'decimal', min: '1', step: '0.01', placeholder: 'Monto enviado en USDT' });
+      const amount = el('input', { type: 'number', inputmode: 'decimal', min: '0.01', step: '0.01', placeholder: 'Monto enviado en USDT (desde 0.01)' });
       const sendBtn = el('button', { class: 'big' }, 'Enviar solicitud');
       sendBtn.onclick = () => {
         const h = hash.value.trim().replace(/\s+/g, '');
         if (!h && !amount.value) return msg(reqBox, 'Pega el hash del envío, o abre "¿No tienes el hash?" e indica el monto.', 'err');
+        const av = Number(String(amount.value).replace(',', '.'));
+        if (amount.value && !(av >= 0.01)) return msg(reqBox, 'El monto debe ser de 0.01 USDT o más.', 'err');
         if (h && !/^0x[0-9a-fA-F]{64}$/.test(h)) return msg(reqBox, 'El hash no es válido: empieza por 0x y tiene 66 caracteres. Cópialo completo desde tu billetera.', 'err');
         submit(sendBtn, { method: 'usdt', tx_hash: h, amount: amount.value.replace(',', '.') }, h ? 'Verificando el pago…' : 'Enviando…');
       };
@@ -480,7 +484,10 @@ async function resellerView() {
         card('1. Envía USDT a esta billetera',
           el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si envías por otra red el dinero se pierde.'),
           el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn),
-          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Mínimo 1 USDT. Se abona a tu saldo USDT lo que llegue.')),
+          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes enviar cualquier monto (desde 0.01 USDT). Se abona a tu saldo USDT lo que llegue.'),
+          // Si ya tiene una billetera registrada, el pago se acredita solo, sin hash ni comprobante
+          dep.autoscan && (dep.my_wallets || []).length ? el('div', { class: 'msg ok', style: 'margin:10px 0 0' }, el('b', {}, '⚡ Abono automático activo. '),
+            `Todo lo que envíes desde ${dep.my_wallets.map(a => a.slice(0, 6) + '…' + a.slice(-4)).join(' o ')} se abona solo en 1-2 minutos. No tienes que pegar el hash ni enviar nada. `, el('span', { class: 'mut' }, 'Si pagas desde otra billetera, usa el paso 2.')) : null),
         card('2. Pega el hash del envío', el('div', { class: 'mut', style: 'margin-bottom:8px' },
           dep.auto ? 'Se comprueba en la blockchain y se te abona solo, normalmente en menos de un minuto.' : 'El admin revisará el pago y te abonará el saldo.'),
           el('div', { class: 'row' }, hash), manual, el('div', { class: 'row', style: 'margin-top:8px' }, note), proof.node,
@@ -610,10 +617,9 @@ async function adminView() {
       prev.className = 'paysum' + (after < 0 ? ' low' : '');
       prev.replaceChildren(el('span', {}, `Ahora tiene ${money(bal(cur), cur)} → quedaría`), el('b', {}, money(after, cur)));
       if (!OWN && ME.quota) {
-        const q = cur === 'usdt' ? ME.quota.usdt : ME.quota.cup, mx = cur === 'usdt' ? ME.perms.max_adj_usdt : ME.perms.max_adj_cup;
+        const q = ME.quota[cur], mx = ME.perms['max_adj_' + cur];
         info.className = 'msg ' + (q.left <= 0 ? 'err' : 'warn');
-        const mm = v => cur === 'usdt' ? Number(v).toFixed(2) + ' USDT' : Math.round(v).toLocaleString('es') + ' CUP';
-        info.replaceChildren(`Tu cupo restante: ${mm(q.left)} (agregar y quitar suman) · máximo por ajuste: ${mm(mx)}`);
+        info.replaceChildren(`Cupo de ${CUR_S[cur]}: te quedan ${money(q.left, cur)} (agregar y quitar suman) · máximo por ajuste: ${money(mx, cur)}`);
       }
     };
     amt.addEventListener('input', draw);
@@ -624,9 +630,9 @@ async function adminView() {
       if (cur !== 'usdt' && !Number.isInteger(n)) return msg(err, 'En CUP el monto debe ser un número entero.', 'err');
       if (!OWN && why.value.trim().length < 3) return msg(err, 'Escribe el motivo (mínimo 3 letras).', 'err');
       if (!OWN && ME.quota) {
-        const q = cur === 'usdt' ? ME.quota.usdt : ME.quota.cup, mx = Number(cur === 'usdt' ? ME.perms.max_adj_usdt : ME.perms.max_adj_cup);
-        if (n > mx) return msg(err, `Este monto supera tu máximo por ajuste (${mx}). Pídele al dueño que lo haga o divídelo.`, 'err');
-        if (n > q.left) return msg(err, q.left <= 0 ? 'Llegaste a tu límite de ajustes manuales. El dueño debe restablecerlo.' : `Solo te quedan ${q.left} de cupo. Pídele al dueño que lo restablezca.`, 'err');
+        const q = ME.quota[cur], mx = Number(ME.perms['max_adj_' + cur]);
+        if (n > mx) return msg(err, `Este monto supera tu máximo por ajuste en ${CUR_S[cur]} (${money(mx, cur)}). Pídele al dueño que lo haga o divídelo.`, 'err');
+        if (n > q.left) return msg(err, q.left <= 0 ? `Llegaste a tu límite de ajustes en ${CUR_S[cur]}. El dueño debe restablecerlo.` : `Solo te quedan ${money(q.left, cur)} de cupo en ${CUR_S[cur]}. Pídele al dueño que lo restablezca.`, 'err');
       }
       go.disabled = true;
       try {
@@ -648,7 +654,7 @@ async function adminView() {
     const f = unit === 'USDT' ? v => Number(v).toFixed(2) : v => Math.round(v).toLocaleString('es');
     return el('div', {}, el('div', { class: 'qrow' }, el('span', { class: 'mut' }, label), el('span', {}, el('b', {}, `Quedan ${f(q.left)} ${unit}`), el('span', { class: 'mut' }, ` · usado ${f(q.used)} de ${f(q.limit)}`))), el('div', { class: 'meter ' + cls }, el('i', { style: `width:${pct}%` })));
   };
-  const quotaBlock = qt => el('div', {}, meterRow('💲 USDT', qt.usdt, 'USDT'), meterRow('🏦📱 CUP (transferencia + saldo móvil)', qt.cup, 'CUP'),
+  const quotaBlock = qt => el('div', {}, meterRow('💲 USDT', qt.usdt, 'USDT'), meterRow('🏦 CUP transferencia', qt.transfer, 'CUP'), meterRow('📱 CUP saldo móvil', qt.mobile, 'CUP'),
     el('div', { class: 'mut', style: 'margin-top:6px;font-size:.78rem' }, 'Último restablecimiento: ' + (qt.reset_at ? qt.reset_at + ' UTC' : 'nunca')));
   const resetQuota = async m => { if (!confirm(`¿Restablecer el cupo de ${m.username}?\nVolverá a tener su cupo completo y el conteo empieza de cero.`)) throw new Error('Cancelado'); await api('POST', '/api/admin/staff-update', { user_id: m.id, reset_quota: true }); };
   const stat = (l, v, style) => el('div', { class: 'stat' }, el('span', { class: 'mut' }, l), el('b', { style: style || null }, String(v)));
@@ -905,12 +911,30 @@ async function adminView() {
         el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_transfer: ptTA.value }), ''))),
       OWN && card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
         el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
-      card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.' + (OWN ? '' : ` Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`)),
+      card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.' + (OWN ? '' : ` Tu límite por aprobación: ${limLine(ME.perms, 'max_')}.`)),
       reqFilters, reqCnt, reqBox),
-      OWN && card('Billeteras de confianza', el('div', { class: 'mut', style: 'margin-bottom:6px' }, 'Los pagos desde estas billeteras se abonan solos a su revendedor. No pongas aquí billeteras de exchanges.'),
+      OWN && card('Billeteras de confianza',
+        el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Todo USDT que llegue a tu billetera desde una de estas direcciones se abona solo a su revendedor, con cualquier monto (desde 0.01) y sin que tenga que pegar el hash ni enviar comprobante. No pongas billeteras de exchanges (Binance, etc.): las comparten muchas personas.'),
         wallets.length ? el('div', { class: 'list' }, ...wallets.map(w => el('div', {},
           el('div', { class: 'l' }, el('div', {}, w.username || '?', w.auto ? ' ' : null, w.auto ? el('span', { class: 'tag trust' }, 'automática') : null), el('div', { class: 'mut addr-s' }, w.address)),
-          el('div', { class: 'r' }, act('Quitar', () => api('POST', '/api/admin/wallet-remove', { address: w.address }), 'red'))))) : el('div', { class: 'mut' }, 'Ninguna todavía. Se agregan al aprobar un pago y marcar "confiar".')));
+          el('div', { class: 'r' }, act('Quitar', async () => { if (!confirm(`¿Quitar la billetera de ${w.username || 'este revendedor'}?\nSus próximos pagos desde ella ya no se abonarán solos.`)) throw new Error('Cancelado'); await api('POST', '/api/admin/wallet-remove', { address: w.address }); }, 'red'))))) : el('div', { class: 'mut' }, 'Ninguna todavía. Agrega una abajo, o se registran al aprobar un pago y marcar "confiar".'),
+        (() => {
+          const wu = el('select', { 'aria-label': 'Revendedor' }, el('option', { value: '' }, 'Elige el revendedor…'), ...users.filter(u => !u.pending).map(u => el('option', { value: u.id }, u.username)));
+          const wa = el('input', { placeholder: 'Su billetera USDT BEP20 (0x…)', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', 'aria-label': 'Dirección de la billetera' });
+          const wm = el('div'), wb = el('button', {}, '＋ Agregar billetera');
+          wb.onclick = async () => {
+            if (!wu.value) return msg(wm, 'Elige el revendedor.', 'err');
+            wb.disabled = true;
+            try { await api('POST', '/api/admin/wallet-add', { user_id: wu.value, address: wa.value.trim() }); await adminView(); }
+            catch (e) { msg(wm, e.message, 'err'); wb.disabled = false; }
+          };
+          const asc = el('input', { type: 'checkbox' }); asc.checked = Number(st.settings.usdt_autoscan ?? 1) === 1;
+          asc.onchange = async () => { try { await api('POST', '/api/admin/settings', { usdt_autoscan: asc.checked ? 1 : 0 }); } catch (e) { alert(e.message); asc.checked = !asc.checked; } };
+          return el('div', { style: 'margin-top:14px;border-top:1px solid var(--line);padding-top:12px' }, el('h3', { style: 'margin:0 0 8px' }, 'Agregar la billetera de un revendedor'),
+            el('div', { class: 'row' }, wu), el('div', { class: 'row' }, wa), el('div', { class: 'acts' }, wb), wm,
+            el('label', { class: 'chk', style: 'margin-top:14px' }, asc, el('span', {}, el('b', {}, 'Abonar solos los depósitos de estas billeteras'),
+              el('small', { class: 'mut', style: 'display:block' }, 'El panel mira la blockchain cada 30 s y abona lo que llegue (con las mismas confirmaciones de siempre). Apágalo para volver a aprobar todo a mano.'))));
+        })()));
     if (hasF(reqF)) reloadReqs(); else drawReqs(reqs);
   }
 
@@ -1106,8 +1130,8 @@ async function adminView() {
       card('Saldo por revendedor', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'El USDT, la transferencia CUP y el saldo móvil CUP de cada revendedor, cada uno por separado.'), el('div', { class: 'search', style: 'margin-bottom:0' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq), sortBox, rowsBox),
       OWN ? card('Límites de tus sub-administradores', staff.length ? el('div', { class: 'list' }, ...staff.map(m => el('div', { style: 'display:block' },
         el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
-          el('div', { class: 'mut' }, 'Aprobar saldo: ' + (m.perms.saldo ? `hasta ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP por aprobación` : 'sin permiso')),
-          el('div', { class: 'mut' }, 'Ajustar saldo a mano: ' + (m.perms.ajustar ? `hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP por ajuste` : 'sin permiso')),
+          el('div', { class: 'mut' }, 'Aprobar saldo: ' + (m.perms.saldo ? `hasta ${limLine(m.perms, 'max_')} por aprobación` : 'sin permiso')),
+          el('div', { class: 'mut' }, 'Ajustar saldo a mano: ' + (m.perms.ajustar ? `hasta ${limLine(m.perms, 'max_adj_')} por ajuste` : 'sin permiso')),
           m.perms.ajustar ? quotaBlock(m.quota) : null,
           el('div', { class: 'mut' }, 'Ver fondos: ' + (m.perms.saldos ? 'sí' : 'no') + ' · Pedidos: ' + (m.perms.pedidos ? 'sí' : 'no') + ' · Revendedores: ' + (m.perms.revendedores ? 'sí' : 'no') + ' · 2FA: ' + (m.totp ? 'activa' : 'no'))))))
         : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.'), el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { tab = 'equipo'; adminView(); } }, 'Cambiar límites en Equipo'))) : null);
@@ -1124,19 +1148,18 @@ async function adminView() {
     const permEditor = p => {
       const boxes = {};
       const mk = ([k, t, h]) => { const i = el('input', { type: 'checkbox' }); i.checked = !!p[k]; boxes[k] = i; return el('label', { class: 'chk' }, i, el('span', {}, el('b', {}, t), el('small', { class: 'mut', style: 'display:block' }, h))); };
-      const mu = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_usdt) }), mc = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_cup) });
-      const ma = el('input', { type: 'number', min: '0', step: '1', value: String(p.max_adj_usdt) }), mb = el('input', { type: 'number', min: '0', step: '1000', value: String(p.max_adj_cup) });
-      const qu = el('input', { type: 'number', min: '0', step: '1', value: String(p.quota_usdt) }), qc = el('input', { type: 'number', min: '0', step: '1000', value: String(p.quota_cup) });
-      const node = el('div', {}, ...PL.map(mk), el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por aprobación: lo que pase de aquí solo lo aprueba el dueño.'),
-        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Aprobar: máx. USDT', mu), el('label', { class: 'fld' }, 'Aprobar: máx. CUP', mc)),
-        el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Tope por cada ajuste manual de saldo:'),
-        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Ajustar: máx. USDT', ma), el('label', { class: 'fld' }, 'Ajustar: máx. CUP', mb)),
-        el('div', { class: 'mut', style: 'margin:8px 0 4px' }, 'Cupo TOTAL de ajustes manuales: lo que agrega y lo que quita se va sumando. Al llegar al cupo no puede mover más hasta que tú lo restablezcas.'),
-        el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Cupo total: USDT', qu), el('label', { class: 'fld' }, 'Cupo total: CUP (transf. + saldo)', qc)));
-      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, ajustar: boxes.ajustar.checked, saldos: boxes.saldos.checked, max_usdt: mu.value, max_cup: mc.value, max_adj_usdt: ma.value, max_adj_cup: mb.value, quota_usdt: qu.value, quota_cup: qc.value }) };
+      // Tres límites por moneda, cada uno independiente: 💲 USDT · 🏦 CUP transferencia · 📱 CUP saldo móvil
+      const lims = {};
+      const numIn = (key, step) => (lims[key] = el('input', { type: 'number', min: '0', step, inputmode: 'numeric', value: String(p[key] ?? 0) }));
+      const trio = (pre, label) => el('div', { class: 'row3' }, ...CURS.map(c => el('label', { class: 'fld' }, `${CUR_ICON[c]} ${CUR_S[c]}`, numIn(pre + c, c === 'usdt' ? '1' : '1000'))));
+      const node = el('div', {}, ...PL.map(mk),
+        el('div', { class: 'mut', style: 'margin:12px 0 4px' }, el('b', {}, 'Tope por aprobación'), ': lo que pase de aquí solo lo aprueba el dueño.'), trio('max_'),
+        el('div', { class: 'mut', style: 'margin:12px 0 4px' }, el('b', {}, 'Tope por cada ajuste manual'), ' de saldo:'), trio('max_adj_'),
+        el('div', { class: 'mut', style: 'margin:12px 0 4px' }, el('b', {}, 'Cupo TOTAL de ajustes manuales'), ': lo que agrega y lo que quita se va sumando, por separado en cada moneda. Al llegar al cupo de una moneda no puede mover más en ella hasta que tú lo restablezcas.'), trio('quota_'));
+      return { node, get: () => ({ revendedores: boxes.revendedores.checked, saldo: boxes.saldo.checked, pedidos: boxes.pedidos.checked, ajustar: boxes.ajustar.checked, saldos: boxes.saldos.checked, ...Object.fromEntries(Object.entries(lims).map(([k, i]) => [k, i.value])) }) };
     };
     const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off' }), p: el('input', { type: 'password', placeholder: 'Contraseña (10+)', autocomplete: 'new-password' }) };
-    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, ajustar: false, saldos: true, max_usdt: 50, max_cup: 20000, max_adj_usdt: 20, max_adj_cup: 10000, quota_usdt: 100, quota_cup: 50000 });
+    const ed = permEditor({ revendedores: true, saldo: true, pedidos: true, ajustar: false, saldos: true, max_usdt: 50, max_transfer: 20000, max_mobile: 20000, max_adj_usdt: 20, max_adj_transfer: 10000, max_adj_mobile: 10000, quota_usdt: 100, quota_transfer: 50000, quota_mobile: 50000 });
     const team = await api('GET', '/api/admin/team-activity');
     const teamById = new Map(team.staff.map(m => [m.id, m]));
     const f2 = (v, c) => c === 'usdt' ? Number(v).toFixed(2) : Math.round(v).toLocaleString('es');
@@ -1170,9 +1193,9 @@ async function adminView() {
           el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
             el('div', { class: 'mut' }, 'Último acceso: ' + (m.last_login ? m.last_login + ' UTC' + (m.last_ip ? ' · ' + m.last_ip : '') : 'nunca')),
             el('div', { class: 'chips', style: 'margin-top:6px;gap:6px' }, ...PL.filter(([k]) => m.perms[k]).map(([, t]) => el('span', { class: 'tag code' }, t)),
-              m.perms.saldo ? el('span', { class: 'tag code' }, `Aprobar hasta ${m.perms.max_usdt} USDT / ${Number(m.perms.max_cup).toLocaleString('es')} CUP`) : null,
-              m.perms.ajustar ? el('span', { class: 'tag code' }, `Ajustar hasta ${m.perms.max_adj_usdt} USDT / ${Number(m.perms.max_adj_cup).toLocaleString('es')} CUP por vez`) : null,
-              m.perms.ajustar ? el('span', { class: 'tag code' }, `Cupo ${m.perms.quota_usdt} USDT / ${Number(m.perms.quota_cup).toLocaleString('es')} CUP`) : null,
+              m.perms.saldo ? el('span', { class: 'tag code' }, `Aprobar hasta ${limLine(m.perms, 'max_')}`) : null,
+              m.perms.ajustar ? el('span', { class: 'tag code' }, `Ajustar hasta ${limLine(m.perms, 'max_adj_')} por vez`) : null,
+              m.perms.ajustar ? el('span', { class: 'tag code' }, `Cupo ${limLine(m.perms, 'quota_')}`) : null,
               el('span', { class: 'tag ' + (m.totp ? 'ok' : 'off') }, m.totp ? '2FA activa' : 'Sin 2FA'))),
           el('details', { class: 'regd' }, el('summary', {}, el('b', {}, 'Editar permisos'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')), pe.node,
             el('div', { class: 'acts', style: 'margin-bottom:10px' }, act('Guardar permisos', () => api('POST', '/api/admin/staff-update', { user_id: m.id, perms: pe.get() }), ''))),
@@ -1228,8 +1251,8 @@ async function adminView() {
     const PN = { saldo: 'aprobar saldo', saldos: 'ver fondos', ajustar: 'ajustar saldo a mano', pedidos: 'ver pedidos', revendedores: 'gestionar revendedores' };
     put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, ME.username), ' · Sub-administrador'),
       el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes: ' + (Object.keys(PN).filter(k => can(k)).map(k => PN[k]).join(', ') || 'nada por ahora') + '.'),
-      can('saldo') ? el('div', { class: 'mut' }, `Tu límite por aprobación: ${ME.perms.max_usdt} USDT / ${Number(ME.perms.max_cup).toLocaleString('es')} CUP.`) : null,
-      can('ajustar') ? el('div', { class: 'mut' }, `Tu límite por ajuste manual: ${ME.perms.max_adj_usdt} USDT / ${Number(ME.perms.max_adj_cup).toLocaleString('es')} CUP por vez (con motivo obligatorio).`) : null,
+      can('saldo') ? el('div', { class: 'mut' }, `Tu límite por aprobación: ${limLine(ME.perms, 'max_')}.`) : null,
+      can('ajustar') ? el('div', { class: 'mut' }, `Tu límite por ajuste manual: ${limLine(ME.perms, 'max_adj_')} por vez (con motivo obligatorio).`) : null,
       can('ajustar') && ME.quota ? el('div', { style: 'margin-top:10px' }, el('div', { class: 'mut' }, 'Tu cupo total de ajustes manuales (agregar y quitar suman; el dueño lo restablece):'), quotaBlock(ME.quota)) : null,
       el('div', { class: 'mut' }, 'Todo lo que haces queda registrado.')), ...accountCards(true));
   }
