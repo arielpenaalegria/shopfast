@@ -1,5 +1,5 @@
 'use strict';
-document.head.append(Object.assign(document.createElement('style'), { textContent: '.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.sl{width:56px;height:56px;border-radius:14px;object-fit:cover;border:1px solid var(--line)}.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -133,6 +133,40 @@ function payInfo(text) {
 }
 
 /** Tarjeta para conectar Telegram y recibir avisos (admin y revendedores). */
+/** Tienda del revendedor: nombre + icono que aparecen en el comprobante y arriba del panel. */
+function storeCard(extra) {
+  let logo = extra.store_logo || '';
+  const name = el('input', { maxlength: 40, placeholder: 'Nombre de tu tienda', value: extra.store_name || '' }), box = el('div');
+  const prev = el('img', { class: 'sl', alt: '' }), setPrev = () => { prev.src = logo || 'logo.jpg'; };
+  setPrev();
+  const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+  file.onchange = async () => {
+    try {
+      const f = file.files[0]; if (!f) return;
+      const bmp = await createImageBitmap(f), c = document.createElement('canvas'); c.width = c.height = 256;
+      const k = Math.max(256 / bmp.width, 256 / bmp.height), w = bmp.width * k, h = bmp.height * k, g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 256, 256); g.drawImage(bmp, (256 - w) / 2, (256 - h) / 2, w, h);
+      logo = c.toDataURL('image/jpeg', 0.85); setPrev();
+    } catch { msg(box, 'No se pudo leer esa imagen. Prueba con otra.', 'err'); }
+  };
+  const save = async b => {
+    b.disabled = true;
+    try { await api('POST', '/api/store', { name: name.value, logo }); storeInfo = { name: name.value.trim(), logo }; extra.store_name = storeInfo.name; extra.store_logo = logo; paintBrand(); msg(box, 'Guardado. Saldrá en tus comprobantes.', 'ok'); }
+    catch (e) { msg(box, e.message, 'err'); } b.disabled = false;
+  };
+  return card('Mi tienda', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tu nombre e icono aparecen arriba del panel y en los comprobantes que le mandas a tus clientes.'),
+    el('div', { class: 'row', style: 'align-items:center' }, prev, el('button', { class: 'sec sm', onclick: () => file.click() }, '🖼 Elegir icono'),
+      el('button', { class: 'ghost sm', onclick: () => { logo = ''; setPrev(); } }, 'Quitar')), file,
+    el('label', {}, 'Nombre de la tienda', name), el('div', { class: 'acts' }, el('button', { onclick: e => save(e.target) }, 'Guardar')), box);
+}
+/** Cambia el logo y el nombre de la cabecera por los de la tienda del revendedor. */
+function paintBrand() {
+  const b = document.querySelector('header .brand'); if (!b) return;
+  const img = b.querySelector('img'), t = b.querySelector('b');
+  if (!b.dataset.def) b.dataset.def = t.firstChild.textContent;
+  if (img) img.src = storeInfo.logo || 'logo.jpg';
+  if (t.firstChild) t.firstChild.textContent = storeInfo.name || b.dataset.def;
+}
 function telegramCard(extra, refresh) {
   if (!extra.telegram) return null;
   const box = el('div');
@@ -322,15 +356,16 @@ const fmtDur = ms => { const t = Math.max(0, Math.round(ms / 1000)), h = Math.fl
 const fmtWhen = ts => new Date(ts).toLocaleString('es', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const loadImg = src => new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = src; });
 /** Dibuja el comprobante en un canvas. NUNCA incluye el precio ni el saldo usado. */
+let storeInfo = { name: '', logo: '' };
 async function receiptBlob(o) {
   const W = 720, H = 1040, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const g = cv.getContext('2d'), F = 'system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
   const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#1a0f05'); bg.addColorStop(1, '#0b0b0d'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
   const glow = g.createRadialGradient(W / 2, 250, 10, W / 2, 250, 420); glow.addColorStop(0, 'rgba(34,197,94,.28)'); glow.addColorStop(1, 'rgba(34,197,94,0)'); g.fillStyle = glow; g.fillRect(0, 0, W, H);
   g.textAlign = 'center';
-  const logo = await loadImg('logo.jpg');
+  const logo = await loadImg(storeInfo.logo || 'logo.jpg');
   if (logo) { g.save(); g.beginPath(); g.arc(W / 2, 90, 44, 0, 7); g.clip(); g.drawImage(logo, W / 2 - 44, 46, 88, 88); g.restore(); }
-  g.fillStyle = '#f4f4f5'; g.font = `800 28px ${F}`; g.fillText('SHOP FAST', W / 2, 168);
+  g.fillStyle = '#f4f4f5'; { const nm = (storeInfo.name || 'SHOP FAST').toUpperCase(); let z = 30; do { g.font = `800 ${z}px ${F}`; z -= 2; } while (g.measureText(nm).width > 620 && z > 14); g.fillText(nm, W / 2, 168); }
   // círculo de éxito
   g.beginPath(); g.arc(W / 2, 270, 52, 0, 7); g.fillStyle = '#22c55e'; g.fill();
   g.strokeStyle = '#fff'; g.lineWidth = 12; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath(); g.moveTo(W / 2 - 22, 272); g.lineTo(W / 2 - 5, 290); g.lineTo(W / 2 + 26, 252); g.stroke();
@@ -394,6 +429,7 @@ async function resellerView() {
     api('GET', '/api/ledger'), api('GET', '/api/topup-requests'), api('GET', '/api/me-extra'), api('GET', '/api/deposit-info')]);
   const bal = me.balances || { usdt: me.balance, transfer: 0, mobile: 0 };
   checkNewlyCompleted(orders);
+  storeInfo = { name: extra.store_name || '', logo: extra.store_logo || '' }; paintBrand();
   const out = $('app'); out.replaceChildren();
   const byId = new Map(products.map(p => [p.id, p]));
   const fams = groupBy(products, p => p.family);
@@ -647,7 +683,7 @@ async function resellerView() {
         el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')));
   }
   if (rtab === 'cuenta') {
-    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), storeCard(extra), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
   }
   // Refresco automático mientras haya algo en curso, pero sin borrar lo que el revendedor está escribiendo
   if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) || reqs.some(r => r.status === 'pending')) {
