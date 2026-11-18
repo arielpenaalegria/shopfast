@@ -50,6 +50,7 @@ async function check(hash) {
     }
     if (!total) return { state: 'bad', msg: 'Esa transacción no envía USDT (BEP20) a la billetera del panel.' };
     const cents = Number(total / 10n ** 16n); // 18 decimales -> centavos (se redondea hacia abajo)
+    if (cents < 1) return { state: 'bad', msg: 'El monto es menor a 0.01 USDT: es demasiado pequeño para abonarse.' };
     const block = parseInt(rc.blockNumber, 16), head = parseInt(await rpc('eth_blockNumber', []), 16);
     const conf = head - block + 1;
     if (conf < MIN_CONF) return { state: 'wait', msg: `Esperando confirmaciones (${Math.max(conf, 0)}/${MIN_CONF}).`, cents, from };
@@ -59,4 +60,15 @@ async function check(hash) {
   }
 }
 
-module.exports = { enabled, check, isHash, wallet: () => (walletOk ? WALLET : null), minConf: MIN_CONF, walletOk: () => walletOk };
+const pad32 = a => '0x' + '0'.repeat(24) + a.slice(2);
+const hex = n => '0x' + n.toString(16);
+/** Bloque más reciente de la red. */
+async function blockNumber() { return parseInt(await rpc('eth_blockNumber', []), 16); }
+/** Transferencias de USDT hacia tu billetera entre dos bloques (para abonar solos los pagos de billeteras de confianza, sin hash). */
+async function transfersTo(fromBlock, toBlock) {
+  const logs = await rpc('eth_getLogs', [{ fromBlock: hex(fromBlock), toBlock: hex(toBlock), address: USDT, topics: [TRANSFER, null, pad32(WALLET)] }]);
+  return (logs || []).filter(l => !l.removed && l.topics && l.topics.length >= 3 && String(l.address).toLowerCase() === USDT).map(l => ({
+    tx: String(l.transactionHash).toLowerCase(), from: '0x' + l.topics[1].slice(26).toLowerCase(), cents: Number(BigInt(l.data) / 10n ** 16n), block: parseInt(l.blockNumber, 16) }));
+}
+
+module.exports = { enabled, check, isHash, blockNumber, transfersTo, wallet: () => (walletOk ? WALLET : null), minConf: MIN_CONF, walletOk: () => walletOk };

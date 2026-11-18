@@ -40,7 +40,7 @@ async function readSession(req) {
   const d = await C.users.findOne({ _id: Number(parts[0]) });
   if (!d || !d.active || (d.sv || 0) !== sv) return null;
   return { id: d._id, username: d.username, role: d.role, perms: d.perms || null, sv, totp_on: !!d.totp_on, balance_cents: d.balance_cents, bal_transfer_cents: d.bal_transfer_cents || 0, bal_mobile_cents: d.bal_mobile_cents || 0, markup_pct: d.markup_pct, min_margin_cents: d.min_margin_cents || 0, active: d.active,
-    adj_used_usdt_c: d.adj_used_usdt_c || 0, adj_used_cup_c: d.adj_used_cup_c || 0, quota_reset_at: d.quota_reset_at || null };
+    adj_used_usdt_c: d.adj_used_usdt_c || 0, adj_used_transfer_c: d.adj_used_transfer_c || 0, adj_used_mobile_c: d.adj_used_mobile_c || 0, adj_used_cup_c: d.adj_used_cup_c || 0, quota_reset_at: d.quota_reset_at || null };
 }
 
 // ---------- Verificación en dos pasos (TOTP, RFC 6238: la que usan Google Authenticator, Authy, etc.) ----------

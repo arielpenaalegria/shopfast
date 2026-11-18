@@ -92,6 +92,7 @@ const SETTINGS = {
   maintenance: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // modo mantenimiento: pausa las recargas
   maintenance_msg: { def: '', check: v => String(v).length <= 300, cast: v => String(v).trim() },
   rate_stale_days: { def: 3, check: v => Number(v) >= 0 && Number(v) <= 60, cast: Number }, // avisar si las tasas CUP llevan N días sin tocarse (0 = no avisar)
+  usdt_autoscan: { def: 1, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // abonar solos los USDT que lleguen de billeteras de confianza (sin hash)
   pay_off_usdt: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, pay_off_transfer: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, pay_off_mobile: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // suspender pedidos de saldo por método
 };
 const maintMsg = st => st.maintenance_msg || 'Estamos en mantenimiento. Las recargas están en pausa, vuelve en un rato.';
@@ -111,16 +112,21 @@ const STAFF_PERM = {
 };
 function normPerms(p = {}) {
   const n = (v, d, max) => { const x = Number(v); return Number.isFinite(x) && x >= 0 ? Math.min(x, max) : d; };
+  const old = (k, legacy) => p[k] !== undefined && p[k] !== '' ? p[k] : p[legacy];
   return { revendedores: !!p.revendedores, saldo: !!p.saldo, pedidos: !!p.pedidos, ajustar: !!p.ajustar, saldos: p.saldos === undefined ? true : !!p.saldos,
-    max_usdt: n(p.max_usdt, 50, 100000), max_cup: n(p.max_cup, 20000, 10000000), max_adj_usdt: n(p.max_adj_usdt, 20, 100000), max_adj_cup: n(p.max_adj_cup, 10000, 10000000),
+    // Cada moneda tiene sus propios límites: USDT, CUP transferencia y CUP saldo móvil (independientes entre sí).
+    // Cuentas viejas con un solo valor CUP: ese valor se copia a transferencia y a saldo móvil hasta que el dueño los cambie.
+    max_usdt: n(p.max_usdt, 50, 100000), max_transfer: n(old('max_transfer', 'max_cup'), 20000, 10000000), max_mobile: n(old('max_mobile', 'max_cup'), 20000, 10000000),
+    max_adj_usdt: n(p.max_adj_usdt, 20, 100000), max_adj_transfer: n(old('max_adj_transfer', 'max_adj_cup'), 10000, 10000000), max_adj_mobile: n(old('max_adj_mobile', 'max_adj_cup'), 10000, 10000000),
     // Cupo TOTAL de ajustes manuales (suma de lo que agrega + lo que quita) hasta que el dueño lo restablezca
-    quota_usdt: n(p.quota_usdt, 100, 10000000), quota_cup: n(p.quota_cup, 50000, 1000000000) };
+    quota_usdt: n(p.quota_usdt, 100, 10000000), quota_transfer: n(old('quota_transfer', 'quota_cup'), 50000, 1000000000), quota_mobile: n(old('quota_mobile', 'quota_cup'), 50000, 1000000000) };
 }
-/** Cupo de ajustes manuales de un sub-admin: límite, usado y lo que le queda (USDT y CUP; el CUP suma transferencia + saldo móvil). */
+/** Cupo de ajustes manuales de un sub-admin: límite, usado y lo que le queda, por separado en USDT, transferencia y saldo móvil. */
+const usedField = cur => `adj_used_${curOf(cur)}_c`;
 function quotaOf(u) {
-  const p = normPerms(u.perms || {}), uu = (u.adj_used_usdt_c || 0) / 100, uc = (u.adj_used_cup_c || 0) / 100;
-  return { usdt: { limit: p.quota_usdt, used: uu, left: Math.max(0, p.quota_usdt - uu) }, cup: { limit: p.quota_cup, used: uc, left: Math.max(0, p.quota_cup - uc) },
-    reset_at: u.quota_reset_at ? fmt(u.quota_reset_at) : null };
+  const p = normPerms(u.perms || {}), out = { reset_at: u.quota_reset_at ? fmt(u.quota_reset_at) : null };
+  for (const c of ['usdt', 'transfer', 'mobile']) { const used = (u[usedField(c)] || 0) / 100, limit = p['quota_' + c]; out[c] = { limit, used, left: Math.max(0, limit - used) }; }
+  return out;
 }
 const AUDIT_LABEL = {
   '/api/login': 'Inicio de sesión', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
@@ -128,7 +134,7 @@ const AUDIT_LABEL = {
   '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/funds': 'Fondos consultados', '/api/admin/user-delete': 'Cuenta borrada',
   '/api/admin/user-update': 'Cuenta modificada', '/api/admin/family': 'Juego/región activado o quitado', '/api/admin/products': 'Paquete activado',
   '/api/admin/product-update': 'Paquete modificado', '/api/admin/resolve': 'Pedido resuelto a mano', '/api/admin/retry': 'Pedido reintentado',
-  '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/wallet-remove': 'Billetera de confianza quitada',
+  '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/wallet-remove': 'Billetera de confianza quitada', '/api/admin/wallet-add': 'Billetera de confianza agregada',
   '/api/admin/settings': 'Ajustes cambiados', '/api/admin/catalog-sync': 'Catálogo actualizado', '/api/admin/webhook-test': 'Aviso de prueba enviado',
   '/api/2fa/start': 'Activación de 2FA iniciada', '/api/2fa/confirm': '2FA activada', '/api/2fa/disable': '2FA desactivada', '/api/logout-all': 'Sesiones cerradas en todos los dispositivos',
   '/api/admin/backup-send': 'Respaldo enviado a Telegram', '/api/admin/restore': 'Respaldo restaurado', '/api/admin/rates-confirm': 'Tasas CUP confirmadas como vigentes',
@@ -137,7 +143,7 @@ const AUDIT_LABEL = {
 };
 const AUDIT_SKIP = new Set(['/api/logout', '/api/validate', '/api/telegram-link', '/api/telegram-unlink']);
 const AUDIT_GET = new Set(['/api/admin/backup', '/api/admin/audit.csv']);
-const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'reset_2fa', 'revoke', 'mode', 'maintenance', 'dry_run', 'markup_auto', 'trust_wallets', 'trust_new_wallets', 'reset_quota'];
+const AUDIT_KEYS = ['amount', 'currency', 'markup_pct', 'min_margin', 'active', 'approve', 'trust_wallet', 'note', 'outcome', 'family', 'variant', 'method', 'amount_cup', 'product_id', 'username', 'address', 'reset_2fa', 'revoke', 'mode', 'maintenance', 'dry_run', 'markup_auto', 'trust_wallets', 'trust_new_wallets', 'reset_quota'];
 const PWD_PATHS = new Set(['/api/change-password', '/api/admin/users', '/api/admin/user-update', '/api/admin/staff', '/api/admin/staff-update', '/api/reset-password']);
 const GATE_OK = new Set(['/api/me', '/api/me-extra', '/api/2fa/start', '/api/2fa/confirm', '/api/logout', '/api/logout-all', '/api/change-password']);
 function dateRange(from, to) {
@@ -265,7 +271,7 @@ route('POST', '/api/reset-password', null, async (req, res, _u, b) => {
 
 route('GET', '/api/me', 'any', async (req, res, u) => {
   const st = await getSettings();
-  send(res, 200, { username: u.username, role: u.role, perms: u.perms || null, totp: !!u.totp_on, must_2fa: u.role === 'subadmin' && !u.totp_on && !!st.require_2fa, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
+  send(res, 200, { username: u.username, role: u.role, perms: u.role === 'subadmin' ? normPerms(u.perms || {}) : (u.perms || null), totp: !!u.totp_on, must_2fa: u.role === 'subadmin' && !u.totp_on && !!st.require_2fa, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, mode: MODE,
     quota: u.role === 'subadmin' ? quotaOf(u) : null,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     payment: { transfer: st.payment_transfer, mobile: st.payment_mobile },
@@ -600,12 +606,12 @@ route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
   const uid = Number(b.user_id), cents = toCents(b.amount), cur = curOf(b.currency);
   if (!Number.isInteger(uid) || !Number.isFinite(cents) || cents === 0 || Math.abs(cents) > (cur === 'usdt' ? 10000000 : 1000000000)) return send(res, 400, { error: 'Datos inválidos' });
   if (admin.role === 'subadmin') {
-    const lim = Number(cur === 'usdt' ? admin.perms.max_adj_usdt : admin.perms.max_adj_cup) * 100;
+    const lim = Number(normPerms(admin.perms || {})['max_adj_' + cur]) * 100;
     if (Math.abs(cents) > lim) return send(res, 403, { error: `Supera tu límite por ajuste (${fmtCur(lim, cur)}). Pídele al dueño que lo haga.` });
     if (String(b.note || '').trim().length < 3) return send(res, 400, { error: 'Escribe el motivo del ajuste (mínimo 3 letras): queda en el registro.' });
     if (cur !== 'usdt' && cents % 100) return send(res, 400, { error: 'El monto en CUP debe ser entero' });
   }
-  const sub = admin.role === 'subadmin', qf = cur === 'usdt' ? 'adj_used_usdt_c' : 'adj_used_cup_c';
+  const sub = admin.role === 'subadmin', qf = usedField(cur);
   let quota = null;
   try {
     await withTx(async s => {
@@ -614,7 +620,7 @@ route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
       const f = CUR[cur];
       // Cupo acumulado del sub-admin: lo que agrega y lo que quita se va sumando hasta que el dueño lo restablezca.
       if (sub) {
-        const me = await C.users.findOne({ _id: admin.id }, { session: s }), qt = quotaOf(me || {}), q = cur === 'usdt' ? qt.usdt : qt.cup;
+        const me = await C.users.findOne({ _id: admin.id }, { session: s }), qt = quotaOf(me || {}), q = qt[cur];
         if (Math.abs(cents) > Math.round(q.left * 100))
           throw httpErr(403, q.left <= 0 ? `Llegaste al límite de ajustes manuales (${fmtCur(q.limit * 100, cur)}). El dueño debe restablecerlo para que sigas.`
             : `Te quedan ${fmtCur(Math.round(q.left * 100), cur)} de tu límite de ajustes manuales y este movimiento es de ${fmtCur(Math.abs(cents), cur)}. Pide al dueño que lo restablezca.`);
@@ -627,7 +633,7 @@ route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
     });
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
   if (sub) {
-    const t = await C.users.findOne({ _id: uid }), q = quota && (cur === 'usdt' ? quota.usdt : quota.cup);
+    const t = await C.users.findOne({ _id: uid }), q = quota && quota[cur];
     TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${cents > 0 ? 'AGREGÓ' : 'QUITÓ'} ${fmtCur(Math.abs(cents), cur)} ${cents > 0 ? 'a' : 'de'} ${t ? t.username : '#' + uid}\nMotivo: ${String(b.note || '').slice(0, 120)}`
       + (q ? `\nLe quedan ${fmtCur(Math.round(q.left * 100), cur)} de su límite${q.left <= 0 ? ' (LLEGÓ AL LÍMITE: restablécelo en Equipo para que siga)' : ''}.` : '')).catch(() => {});
   }
@@ -851,9 +857,10 @@ route('GET', '/api/me-extra', 'any', async (req, res, u) => {
 const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 const short = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '';
 
-route('GET', '/api/deposit-info', 'any', async (req, res) => {
+route('GET', '/api/deposit-info', 'any', async (req, res, u) => {
   const st = await getSettings();
-  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf,
+  const mine = u && u.role === 'reseller' ? (await C.wallets.find({ user_id: u.id }).toArray()).map(w => w._id) : [];
+  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), autoscan: BSC.enabled() && !!st.usdt_autoscan, my_wallets: mine, network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf,
     payment_transfer: st.payment_transfer, payment_mobile: st.payment_mobile,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     suspended: { usdt: !!st.pay_off_usdt, transfer: !!st.pay_off_transfer, mobile: !!st.pay_off_mobile } });
@@ -866,7 +873,7 @@ route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
   if (hash && !BSC.isHash(hash)) return send(res, 400, { error: 'El hash no es válido. Debe empezar por 0x y tener 66 caracteres.' });
   const cents = b.amount === undefined || b.amount === '' ? null : toCents(b.amount);
   if (method === 'usdt') {
-    if (cents !== null && !(cents >= 100 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido (mínimo 1 USDT)' });
+    if (cents !== null && !(cents >= 1 && cents <= 10000000)) return send(res, 400, { error: 'Monto inválido: escribe un monto desde 0.01 USDT.' });
     if (!hash && cents === null) return send(res, 400, { error: 'Pega el hash de la transacción (o indica el monto si pagaste de otra forma).' });
   } else {
     // Transferencia / saldo móvil: monto en CUP obligatorio
@@ -952,6 +959,58 @@ async function verifyDeposit(id) {
     return 'manual';
   } finally { verifying.delete(id); }
 }
+/** Detecta en la blockchain los USDT enviados a tu billetera desde billeteras de confianza y los abona solos, sin que el revendedor
+ *  mande hash ni comprobante. Solo mira bloques NUEVOS desde que se encendió (nunca recorre el pasado), con las mismas confirmaciones
+ *  que la verificación por hash. Cada transacción se abona una sola vez (índice único por hash). */
+let scanning = false, scanErrAt = 0;
+async function scanDeposits() {
+  if (!BSC.enabled() || scanning) return;
+  scanning = true;
+  try {
+    const st = await getSettings(), head = await BSC.blockNumber(), safe = head - BSC.minConf + 1;
+    const cur = await kvGet('bsc_scan_block');
+    if (!cur || !st.usdt_autoscan) { await kvSet('bsc_scan_block', safe); return; } // apagado o primera vez: se parte desde ahora
+    let from = Number(cur.value) + 1;
+    if (!(from <= safe)) return;
+    if (safe - from > 20000) from = safe - 20000; // tras una caída muy larga solo se retoman los últimos ~16 h
+    for (let n = 0; n < 12 && from <= safe; n++) {
+      const to = Math.min(from + 999, safe);
+      const found = await BSC.transfersTo(from, to);
+      const byTx = new Map();
+      for (const t of found) { const x = byTx.get(t.tx) || { tx: t.tx, from: t.from, cents: 0, block: t.block }; x.cents += t.cents; byTx.set(t.tx, x); }
+      for (const t of byTx.values()) await creditScanned(t).catch(e => console.error('escáner', t.tx.slice(0, 12), e.message));
+      await kvSet('bsc_scan_block', to); from = to + 1;
+    }
+  } catch (e) {
+    if (Date.now() - scanErrAt > 3600e3) { scanErrAt = Date.now(); console.error('Detección de depósitos USDT:', e.message); }
+  } finally { scanning = false; }
+}
+async function creditScanned(t) {
+  if (t.cents < 1) return;
+  if (await C.topup_requests.findOne({ tx_hash: t.tx })) return; // ya tiene solicitud (por hash): la maneja la verificación normal
+  const w = await C.wallets.findOne({ _id: t.from });
+  if (!w) return; // remitente desconocido: no se abona (puede ser un exchange o un envío ajeno)
+  const u = await C.users.findOne({ _id: w.user_id, role: 'reseller' });
+  if (!u || !u.active) return;
+  const chain = { from: t.from, cents: t.cents, block: t.block };
+  const done = await withTx(async s => {
+    // Si el revendedor ya había pedido ese mismo monto sin hash, se cierra ESA solicitud (así nadie abona dos veces)
+    const open = await C.topup_requests.findOne({ user_id: u._id, status: 'pending', method: 'usdt', tx_hash: { $exists: false }, amount_cents: t.cents }, { session: s });
+    const set = { status: 'approved', approved_cents: t.cents, chain, verify: 'ok', verify_msg: 'Detectado en BSC', tx_hash: t.tx, admin_note: 'Abonado automáticamente (billetera de confianza)', decided_at: now() };
+    let id;
+    if (open) { id = open._id; const ch = await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: set }, { session: s }); if (!ch.modifiedCount) return null; }
+    else {
+      id = await nextId('topup_requests', s);
+      await C.topup_requests.insertOne({ _id: id, user_id: u._id, method: 'usdt', amount_cents: t.cents, amount_cup: null, note: 'Depósito detectado automáticamente', image: null, created_at: now(), ...set }, { session: s });
+    }
+    await addBalance(s, u._id, t.cents);
+    await ledger(s, u._id, t.cents, 'topup', 'req-' + id, `USDT BEP20 · detectado automáticamente (#${id})`);
+    return id;
+  }).catch(e => { if (isDup(e)) return null; throw e; });
+  if (!done) return;
+  TG.notifyUser(u._id, `✅ Recibimos tu pago: se te abonaron ${(t.cents / 100).toFixed(2)} USDT.`).catch(() => {});
+  TG.notifyAdmins(`✅ Depósito automático #${done}: ${u.username} +${(t.cents / 100).toFixed(2)} USDT desde ${short(t.from)} (sin hash)`).catch(() => {});
+}
 async function recheckDeposits() {
   if (!BSC.enabled()) return;
   for (const t of await C.topup_requests.find({ status: 'pending', verify: 'wait' }).sort({ _id: 1 }).limit(10).toArray()) await verifyDeposit(t._id);
@@ -1003,7 +1062,7 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
       if (approve && !(cents > 0 && cents <= (cur === 'usdt' ? 10000000 : 1000000000))) throw httpErr(400, 'Monto inválido');
       if (approve && cur !== 'usdt' && cents % 100) throw httpErr(400, 'El monto en CUP debe ser entero');
       if (approve && admin.role === 'subadmin') {
-        const lim = Number(cur === 'usdt' ? (admin.perms && admin.perms.max_usdt) ?? 50 : (admin.perms && admin.perms.max_cup) ?? 20000) * 100;
+        const lim = Number(normPerms(admin.perms || {})['max_' + cur]) * 100;
         if (cents > lim) throw httpErr(403, `Supera tu límite de aprobación (${fmtCur(lim, cur)}). Pídele al dueño que lo apruebe.`);
       }
       await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
@@ -1027,6 +1086,21 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
 route('GET', '/api/admin/wallets', 'admin', async (req, res) => {
   const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
   send(res, 200, (await C.wallets.find({}).sort({ created_at: -1 }).toArray()).map(w => ({ address: w._id, username: us.get(w.user_id), created_at: fmt(w.created_at), auto: w.by === 'auto' })));
+});
+/** El dueño registra la billetera de un revendedor: desde ahí, todo USDT que llegue de ella se abona solo (cualquier monto). */
+route('POST', '/api/admin/wallet-add', 'admin', async (req, res, admin, b) => {
+  const address = String(b.address || '').trim().toLowerCase(), uid = Number(b.user_id);
+  if (!/^0x[0-9a-f]{40}$/.test(address)) return send(res, 400, { error: 'La dirección no es válida: empieza por 0x y tiene 42 caracteres.' });
+  if (address === BSC.wallet()) return send(res, 400, { error: 'Esa es la billetera de tu propio panel, no la de un revendedor.' });
+  const u = await C.users.findOne({ _id: uid, role: 'reseller' });
+  if (!u) return send(res, 404, { error: 'Elige un revendedor.' });
+  try { await C.wallets.insertOne({ _id: address, user_id: uid, created_at: now(), by: admin.username }); }
+  catch (e) {
+    if (!isDup(e)) throw e;
+    const w = await C.wallets.findOne({ _id: address });
+    return send(res, 409, { error: w && w.user_id === uid ? 'Esa billetera ya está registrada para este revendedor.' : 'Esa billetera ya pertenece a otro revendedor.' });
+  }
+  send(res, 201, { ok: true });
 });
 route('POST', '/api/admin/wallet-remove', 'admin', async (req, res, _u, b) => {
   await C.wallets.deleteOne({ _id: String(b.address || '').toLowerCase() }); send(res, 200, { ok: true });
@@ -1198,7 +1272,7 @@ route('POST', '/api/admin/staff-update', 'admin', async (req, res, _u, b) => {
   if (!(await C.users.findOne(f))) return send(res, 404, { error: 'Sub-admin no encontrado' });
   if (b.active !== undefined) set.active = b.active ? 1 : 0;
   if (b.perms) set.perms = normPerms(b.perms);
-  if (b.reset_quota) Object.assign(set, { adj_used_usdt_c: 0, adj_used_cup_c: 0, quota_reset_at: now() }); // el dueño restablece el cupo de ajustes manuales
+  if (b.reset_quota) Object.assign(set, { adj_used_usdt_c: 0, adj_used_transfer_c: 0, adj_used_mobile_c: 0, adj_used_cup_c: 0, quota_reset_at: now() }); // el dueño restablece el cupo de ajustes manuales
   if (b.password) { if (String(b.password).length < 10) return send(res, 400, { error: 'Contraseña de 10+ caracteres' }); set.password_hash = A.hashPassword(String(b.password)); }
   if (b.reset_2fa) Object.assign(set, { totp_on: 0, totp_secret: null, totp_recovery: [], totp_pending: null });
   const upd = {}; if (Object.keys(set).length) upd.$set = set; if (b.password || b.revoke || b.reset_2fa) upd.$inc = { sv: 1 }; // sube la versión: sus sesiones abiertas dejan de valer
@@ -1551,9 +1625,21 @@ async function migrateMarkup() {
   await kvSet('markup_manual_v1', '1');
 }
 
+/** Una sola vez: el consumo de cupo CUP que estaba junto se reparte entre transferencia y saldo móvil según el historial real. */
+async function migrateQuotaSplit() {
+  if (await kvGet('quota_split_v1')) return;
+  for (const m of await C.users.find({ role: 'subadmin' }).toArray()) {
+    const since = m.quota_reset_at || m.created_at || new Date(0), used = { usdt: 0, transfer: 0, mobile: 0 };
+    for (const r of await C.ledger.find({ by_id: m._id, created_at: { $gte: since } }).toArray()) if (!r.ref) used[curOf(r.currency)] += Math.abs(r.amount_cents);
+    await C.users.updateOne({ _id: m._id }, { $set: { adj_used_transfer_c: used.transfer, adj_used_mobile_c: used.mobile, adj_used_cup_c: 0 } });
+  }
+  await kvSet('quota_split_v1', '1');
+}
+
 (async () => {
   await connect();
   await migrateMarkup();
+  await migrateQuotaSplit();
   await bootstrapAdmin();
   await envResetPassword();
   await envReset2fa();
@@ -1571,6 +1657,8 @@ async function migrateMarkup() {
   TG.start();
   if (BSC.enabled()) console.log('Depósitos USDT BEP20 automáticos: activos'); else if (process.env.USDT_WALLET && !BSC.walletOk()) console.error('USDT_WALLET no es una dirección BEP20 válida (0x + 40 caracteres)');
   setInterval(() => recheckDeposits().catch(e => console.error('depósitos', e.message)), 30000);
+  const SCAN_MS = Number(process.env.SCAN_MS) || 30000;
+  setInterval(() => scanDeposits().catch(() => {}), SCAN_MS); setTimeout(() => scanDeposits().catch(() => {}), Math.min(20000, SCAN_MS));
   setInterval(() => checkLowBalance().catch(e => console.error('saldo bajo', e.message)), 10 * 60 * 1000);
   setTimeout(() => checkLowBalance().catch(() => {}), 20000);
   setInterval(syncSafe, 15 * 60 * 1000); // el catálogo se actualiza cada 15 min (límite: 60 peticiones/min)

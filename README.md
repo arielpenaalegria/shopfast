@@ -132,3 +132,14 @@ Entra con esa clave y **borra las dos variables**. Si no existía ningún admin,
   solo tú las cambias, o las devuelves a automático. Al actualizar, las cuentas que ya tenían un margen distinto al general quedan marcadas como manuales (se hace una sola vez).
 - **Ventas → Quién vende más**: ranking por cantidad de recargas (hoy / semana / mes / todo). **Fondos**: USDT, transferencia CUP y saldo móvil CUP de cada revendedor por separado, con orden y filtro.
 - Interfaz reorganizada: Resumen más corto, nueva pestaña **Ajustes**, tarjetas por revendedor y ventana propia para agregar/quitar saldo.
+
+
+## Límites separados por moneda y depósitos USDT sin mínimo (última versión)
+- **Sub-administradores: límites independientes en 3 monedas.** El tope por aprobación, el tope por ajuste manual y el cupo total se fijan por separado en
+  💲 USDT, 🏦 CUP transferencia y 📱 CUP saldo móvil. Gastar el cupo de una moneda no toca el de las otras. Las cuentas que ya existían conservan su valor CUP
+  (se copia a transferencia y a saldo móvil) y lo que ya habían consumido se reparte entre ambas con el historial real, una sola vez al actualizar.
+- **USDT desde 0.01**: ya no hay mínimo de 1 USDT (ni al pegar el hash ni al indicar el monto a mano).
+- **Abono automático sin hash**: Saldo → *Billeteras de confianza* → "Agregar la billetera de un revendedor". Desde ese momento, todo USDT que llegue a tu billetera
+  desde esa dirección se abona solo a ese revendedor (cualquier monto desde 0.01, con las mismas confirmaciones), sin que pegue hash ni mande comprobante.
+  El panel revisa la blockchain cada 30 s y **solo mira bloques nuevos** (nunca abona pagos viejos). Se puede apagar con la casilla de esa misma tarjeta.
+  Requiere `USDT_WALLET` y `BSC_RPC_URL` (NodeReal). Las billeteras desconocidas o de otro revendedor nunca se abonan solas.
