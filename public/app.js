@@ -316,6 +316,75 @@ function sessionsCard() {
 }
 const accountCards = staff => [passwordCard(), staff ? twoFaCard() : null, sessionsCard()];
 
+/* =================== COMPROBANTE + EFECTO DE ÉXITO (sin precio) =================== */
+const fmtDur = ms => { const t = Math.max(0, Math.round(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
+  return h ? `${h} h ${m} min` : m ? `${m} min ${sec} s` : `${sec} s`; };
+const fmtWhen = ts => new Date(ts).toLocaleString('es', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const loadImg = src => new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = src; });
+/** Dibuja el comprobante en un canvas. NUNCA incluye el precio ni el saldo usado. */
+async function receiptBlob(o) {
+  const W = 720, H = 1040, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d'), F = 'system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+  const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#1a0f05'); bg.addColorStop(1, '#0b0b0d'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  const glow = g.createRadialGradient(W / 2, 250, 10, W / 2, 250, 420); glow.addColorStop(0, 'rgba(34,197,94,.28)'); glow.addColorStop(1, 'rgba(34,197,94,0)'); g.fillStyle = glow; g.fillRect(0, 0, W, H);
+  g.textAlign = 'center';
+  const logo = await loadImg('logo.jpg');
+  if (logo) { g.save(); g.beginPath(); g.arc(W / 2, 90, 44, 0, 7); g.clip(); g.drawImage(logo, W / 2 - 44, 46, 88, 88); g.restore(); }
+  g.fillStyle = '#f4f4f5'; g.font = `800 28px ${F}`; g.fillText('SHOP FAST', W / 2, 168);
+  // círculo de éxito
+  g.beginPath(); g.arc(W / 2, 270, 52, 0, 7); g.fillStyle = '#22c55e'; g.fill();
+  g.strokeStyle = '#fff'; g.lineWidth = 12; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath(); g.moveTo(W / 2 - 22, 272); g.lineTo(W / 2 - 5, 290); g.lineTo(W / 2 + 26, 252); g.stroke();
+  g.fillStyle = '#86efac'; g.font = `800 38px ${F}`; g.fillText('¡Recarga realizada con éxito!', W / 2, 372);
+  // paquete (diamantes)
+  const fit = (t, max, size, w = 800) => { let z = size; do { g.font = `${w} ${z}px ${F}`; z -= 2; } while (g.measureText(t).width > max && z > 14); };
+  g.fillStyle = '#ff7a00'; fit('💎 ' + o.product_name, 640, 40); g.fillText('💎 ' + o.product_name, W / 2, 440);
+  // tarjeta con datos
+  const rr = (x, y, w, h, r) => { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); };
+  rr(40, 480, W - 80, 380, 24); g.fillStyle = '#16161a'; g.fill(); g.strokeStyle = '#2a2a31'; g.lineWidth = 2; g.stroke();
+  const rows = [['ID del jugador', o.target], ['Nombre de la cuenta', o.player_name || 'No disponible'], ['Tiempo en completarse', o.done_ts && o.created_ts ? fmtDur(o.done_ts - o.created_ts) : '—'], ['Fecha', o.done_ts ? fmtWhen(o.done_ts) : o.created_at]];
+  rows.forEach(([k, v], i) => {
+    const y = 520 + i * 90;
+    g.fillStyle = '#a1a1aa'; g.font = `600 22px ${F}`; g.fillText(k, W / 2, y + 22);
+    g.fillStyle = '#f4f4f5'; fit(String(v), 600, 34, 700); g.fillText(String(v), W / 2, y + 62);
+    if (i < rows.length - 1) { g.fillStyle = '#2a2a31'; g.fillRect(90, y + 76, W - 180, 2); }
+  });
+  g.fillStyle = '#a1a1aa'; g.font = `500 22px ${F}`; g.fillText(`Pedido #${o.id}`, W / 2, 920);
+  g.fillStyle = '#ff7a00'; g.font = `700 24px ${F}`; g.fillText('Gracias por tu compra 🔥', W / 2, 980);
+  return new Promise(ok => cv.toBlob(ok, 'image/png'));
+}
+async function shareReceipt(o, btn) {
+  const old = btn && btn.textContent; if (btn) { btn.disabled = true; btn.textContent = 'Generando…'; }
+  try {
+    const blob = await receiptBlob(o), file = new File([blob], `recarga-${o.id}.png`, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: 'Recarga realizada con éxito' }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: file.name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } finally { if (btn) { btn.disabled = false; btn.textContent = old; } }
+}
+/** Pantalla de celebración: confeti + vista previa del comprobante con botón de compartir. */
+async function celebrate(o) {
+  if (document.getElementById('cele')) return;
+  const blob = await receiptBlob(o), url = URL.createObjectURL(blob);
+  const close = () => { ov.remove(); URL.revokeObjectURL(url); };
+  const ov = el('div', { id: 'cele', class: 'cele', onclick: e => { if (e.target === ov) close(); } },
+    el('div', { class: 'cele-box' }, el('div', { class: 'cele-t' }, '🎉 ¡Recarga realizada con éxito!'), el('img', { src: url, alt: 'Comprobante' }),
+      el('div', { class: 'row', style: 'margin-top:12px' }, el('button', { onclick: e => shareReceipt(o, e.target) }, '📤 Compartir / Guardar'), el('button', { class: 'ghost', onclick: close }, 'Cerrar'))));
+  const cols = ['#ff7a00', '#22c55e', '#facc15', '#38bdf8', '#f472b6'];
+  for (let i = 0; i < 46; i++) ov.append(el('i', { class: 'conf', style: `left:${Math.random() * 100}%;background:${cols[i % 5]};animation-delay:${(Math.random() * 0.8).toFixed(2)}s;animation-duration:${(2 + Math.random() * 1.8).toFixed(2)}s;transform:rotate(${Math.floor(Math.random() * 360)}deg)` }));
+  document.body.append(ov);
+  try { navigator.vibrate && navigator.vibrate([80, 40, 120]); } catch {}
+}
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.cele{position:fixed;inset:0;z-index:99;background:#000c;display:flex;align-items:center;justify-content:center;padding:14px;overflow:hidden;animation:rise .25s ease both}.cele-box{position:relative;z-index:2;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;max-width:420px;width:100%;max-height:96vh;overflow:auto;text-align:center;animation:pop .45s cubic-bezier(.2,1.4,.4,1) both}.cele-t{font-weight:800;font-size:1.1rem;margin-bottom:10px;color:#86efac}.cele-box img{width:100%;border-radius:12px;display:block}.conf{position:absolute;top:-20px;width:9px;height:16px;border-radius:2px;z-index:1;animation:fall linear forwards}@keyframes fall{to{top:105%;opacity:.8}}@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:scale(1);opacity:1}}' }));
+const seenActive = new Set();
+function checkNewlyCompleted(orders) {
+  const first = !seenActive.size && !checkNewlyCompleted.init; checkNewlyCompleted.init = true;
+  let hit = null;
+  for (const o of orders) {
+    if (['pending', 'processing', 'unknown'].includes(o.status)) seenActive.add(o.id);
+    else if (o.status === 'completed' && seenActive.has(o.id)) { seenActive.delete(o.id); if (!first) hit = hit || o; }
+  }
+  if (hit) celebrate(hit).catch(() => {});
+}
+
 /* =================== REVENDEDOR =================== */
 const pick = { family: null, variant: null, product: null, fill: null };
 let scrollTo3 = false, rtab = 'recargar';
@@ -324,6 +393,7 @@ async function resellerView() {
   const [me, products, orders, led, reqs, extra, dep] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'),
     api('GET', '/api/ledger'), api('GET', '/api/topup-requests'), api('GET', '/api/me-extra'), api('GET', '/api/deposit-info')]);
   const bal = me.balances || { usdt: me.balance, transfer: 0, mobile: 0 };
+  checkNewlyCompleted(orders);
   const out = $('app'); out.replaceChildren();
   const byId = new Map(products.map(p => [p.id, p]));
   const fams = groupBy(products, p => p.family);
@@ -541,7 +611,9 @@ async function resellerView() {
     const csv = el('a', { href: base + '.csv?' + qs(F), download: '' }, el('button', { class: 'sec sm' }, '⬇ Descargar CSV'));
     const rowO = o => el('div', {},
       el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.target} · ${o.created_at}`), o.reason ? el('div', { class: 'mut' }, o.reason) : null,
-        byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null),
+        el('div', { class: 'acts', style: 'gap:6px' },
+          o.status === 'completed' ? el('button', { class: 'sec sm', onclick: e => shareReceipt(o, e.target) }, '🧾 Comprobante') : null,
+          byId.has(o.product_id) && ['completed', 'failed'].includes(o.status) ? el('button', { class: 'ghost', onclick: () => repeat(o) }, '↻ Repetir') : null)),
       el('div', { class: 'r' }, el('div', {}, money(o.price, o.currency)), tag(o.status)));
     const rowL = l => el('div', {},
       el('div', { class: 'l' }, el('div', {}, LT[l.type] || l.type), el('div', { class: 'mut' }, (l.note || '') + ' · ' + l.created_at)),
