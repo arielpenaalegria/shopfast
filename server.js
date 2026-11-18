@@ -343,6 +343,27 @@ function buildPayload(p, body) {
 // Verificar el ID antes de comprar (POST /player/validate). Límite de Central One: 30/min para TODA la cuenta,
 // así que aquí se limita a 25/min en total y 1 cada 2 s por usuario. No cobra nada y no es obligatorio.
 const valHits = []; const valLast = new Map();
+// Nombre de la cuenta del jugador (para el comprobante): se recuerda 30 min lo que ya verificó el revendedor y, si no lo verificó,
+// se consulta solo en segundo plano al hacer el pedido (sin retrasarlo y respetando el límite de 30/min de Central One).
+const nameCache = new Map();
+const nameKey = (uid, catId, payload) => uid + '|' + catId + '|' + JSON.stringify(Object.keys(payload).sort().map(k => [k, String(payload[k])]));
+const cleanName = n => String(n || '').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 40) || null;
+function rememberName(k, name) {
+  const n = cleanName(name); if (!n) return;
+  if (nameCache.size > 2000) for (const key of [...nameCache.keys()].slice(0, 500)) nameCache.delete(key);
+  nameCache.set(k, { n, at: Date.now() });
+}
+async function attachPlayerName(orderId, uid, p, payload) {
+  const k = nameKey(uid, p.product_id, payload), hit = nameCache.get(k);
+  let name = hit && Date.now() - hit.at < 30 * 60e3 ? hit.n : null;
+  if (!name) {
+    const t = Date.now(); while (valHits.length && t - valHits[0] > 60000) valHits.shift();
+    if (valHits.length >= 20) return; // se deja margen para los botones "Verificar ID" de los revendedores
+    valHits.push(t);
+    try { const r = await provider.validatePlayer({ catalogItemId: p.product_id, targetPayload: payload }); if (String(r.status || '').toLowerCase() === 'valid') name = cleanName(r.name); } catch {}
+  }
+  if (name) await C.orders.updateOne({ _id: orderId }, { $set: { player_name: name } });
+}
 route('POST', '/api/validate', 'reseller', async (req, res, u, body) => {
   { const st0 = await getSettings(); if (st0.maintenance) return send(res, 503, { error: maintMsg(st0) }); }
   const p = (await availableProducts(Number(body.product_id)))[0];
@@ -356,7 +377,7 @@ route('POST', '/api/validate', 'reseller', async (req, res, u, body) => {
   try {
     const r = await provider.validatePlayer({ catalogItemId: p.product_id, targetPayload: b.payload });
     const st = String(r.status || '').toLowerCase();
-    if (st === 'valid') return send(res, 200, { result: 'valid', name: r.name || null });
+    if (st === 'valid') { rememberName(nameKey(u.id, p.product_id, b.payload), r.name); return send(res, 200, { result: 'valid', name: r.name || null }); }
     if (st === 'invalid') return send(res, 200, { result: 'invalid' });
     return send(res, 200, { result: 'unverified' }); // este juego no permite verificar: se puede enviar igual
   } catch (e) {
@@ -394,6 +415,7 @@ route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
     });
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
 
+  attachPlayerName(orderId, u.id, p, payload).catch(() => {}); // nombre de la cuenta para el comprobante (en segundo plano)
   // 2) Enviar al proveedor
   const r = await submitOrder(orderId);
   if (r.status === 'failed') return send(res, 422, { error: 'No se pudo procesar la recarga. Se devolvió tu saldo.', order_id: orderId, status: 'failed' });
@@ -407,7 +429,7 @@ async function settle(orderId, outcome, detail, failureCode) {
     const o = await C.orders.findOne({ _id: orderId, status: { $in: ['pending', 'processing', 'unknown'] } }, { session: s });
     if (!o) return false;
     const set = { status: outcome, updated_at: now() };
-    if (outcome === 'completed') set.detail = null;
+    if (outcome === 'completed') { set.detail = null; set.completed_at = set.updated_at; }
     else { if (detail != null) set.detail = detail; if (failureCode != null) set.failure_code = failureCode; }
     const refund = outcome === 'failed' && !o.refunded; // si ya se le devolvió antes, no se devuelve otra vez
     if (refund) set.refunded = 1;
@@ -426,7 +448,10 @@ async function settle(orderId, outcome, detail, failureCode) {
 async function notifyOrder(orderId) {
   const o = await C.orders.findOne({ _id: orderId }); if (!o) return;
   const line = `${o.product_name} → ${o.target}`;
-  if (o.status === 'completed') await TG.notifyUser(o.user_id, `✅ Recarga #${o._id} completada\n${line}\n${fmtCur(o.price_cents, o.currency)}`);
+  if (o.status === 'completed') {
+    const secs = Math.max(0, Math.round((new Date(o.completed_at || o.updated_at) - new Date(o.created_at)) / 1000));
+    await TG.notifyUser(o.user_id, `✅ Recarga #${o._id} completada\n${line}${o.player_name ? '\n👤 ' + o.player_name : ''}\n⏱ ${secs < 60 ? secs + ' s' : Math.floor(secs / 60) + ' min ' + (secs % 60) + ' s'}\n${fmtCur(o.price_cents, o.currency)}`);
+  }
   else if (o.status === 'failed') await TG.notifyUser(o.user_id, `❌ Recarga #${o._id} fallida\n${line}\nSe devolvió el saldo.`);
   else if (o.status === 'unknown') await TG.notifyAdmins(`⚠️ Pedido #${o._id} para revisar\n${line}\n${o.detail || ''}`);
 }
@@ -438,7 +463,7 @@ function chargeAgain(orderId, note) {
     if (!o) return null;
     if (!await takeBalance(s, o.user_id, o.price_cents, o.currency)) return false;
     await ledger(s, o.user_id, -o.price_cents, 'order', String(orderId), note, o.currency);
-    await C.orders.updateOne({ _id: orderId }, { $set: { status: 'completed', refunded: 0, detail: note, updated_at: now() } }, { session: s });
+    await C.orders.updateOne({ _id: orderId }, { $set: { status: 'completed', refunded: 0, detail: note, updated_at: now(), completed_at: now() } }, { session: s });
     return true;
   }).then(r => { if (r) notifyOrder(orderId).catch(() => {}); return r; });
 }
@@ -560,7 +585,10 @@ async function myOrders(u, sp, cap) {
   if (q) os = os.filter(o => [o._id, '#' + o._id, o.product_name, o.target].map(x => x ?? '').join(' ').toLowerCase().includes(q)).slice(0, lim);
   return os.map(o => ({
     id: o._id, product_id: o.product_id, target_payload: o.target_payload, product_name: o.product_name, target: o.target, price: o.price_cents / 100, currency: curOf(o.currency), status: o.status, created_at: fmt(o.created_at),
-    reason: o.status === 'failed' ? (REASONS[o.failure_code] || 'No se pudo entregar la recarga. Se devolvió tu saldo.') : null }));
+    reason: o.status === 'failed' ? (REASONS[o.failure_code] || 'No se pudo entregar la recarga. Se devolvió tu saldo.') : null,
+    // Para el comprobante en imagen (sin precio): nombre de la cuenta y cuánto tardó
+    player_name: o.player_name || null, created_ts: o.created_at ? new Date(o.created_at).getTime() : null,
+    done_ts: o.status === 'completed' ? new Date(o.completed_at || o.updated_at).getTime() : null }));
 }
 async function myLedger(u, sp, cap) {
   const q = (sp.get('q') || '').trim().toLowerCase(), f = { user_id: u.id }, lim = Math.min(Number(sp.get('limit')) || 100, cap), cur = ['usdt', 'transfer', 'mobile'].includes(sp.get('method')) ? sp.get('method') : '';
