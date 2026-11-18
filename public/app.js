@@ -358,33 +358,55 @@ const loadImg = src => new Promise(ok => { const i = new Image(); i.onload = () 
 /** Dibuja el comprobante en un canvas. NUNCA incluye el precio ni el saldo usado. */
 let storeInfo = { name: '', logo: '' };
 async function receiptBlob(o) {
-  const W = 720, H = 1040, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-  const g = cv.getContext('2d'), F = 'system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-  const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#1a0f05'); bg.addColorStop(1, '#0b0b0d'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
-  const glow = g.createRadialGradient(W / 2, 250, 10, W / 2, 250, 420); glow.addColorStop(0, 'rgba(34,197,94,.28)'); glow.addColorStop(1, 'rgba(34,197,94,0)'); g.fillStyle = glow; g.fillRect(0, 0, W, H);
-  g.textAlign = 'center';
-  const logo = await loadImg(storeInfo.logo || 'logo.jpg');
-  if (logo) { g.save(); g.beginPath(); g.arc(W / 2, 90, 44, 0, 7); g.clip(); g.drawImage(logo, W / 2 - 44, 46, 88, 88); g.restore(); }
-  g.fillStyle = '#f4f4f5'; { const nm = (storeInfo.name || 'SHOP FAST').toUpperCase(); let z = 30; do { g.font = `800 ${z}px ${F}`; z -= 2; } while (g.measureText(nm).width > 620 && z > 14); g.fillText(nm, W / 2, 168); }
-  // círculo de éxito
-  g.beginPath(); g.arc(W / 2, 270, 52, 0, 7); g.fillStyle = '#22c55e'; g.fill();
-  g.strokeStyle = '#fff'; g.lineWidth = 12; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath(); g.moveTo(W / 2 - 22, 272); g.lineTo(W / 2 - 5, 290); g.lineTo(W / 2 + 26, 252); g.stroke();
-  g.fillStyle = '#86efac'; g.font = `800 38px ${F}`; g.fillText('¡Recarga realizada con éxito!', W / 2, 372);
-  // paquete (diamantes)
-  const fit = (t, max, size, w = 800) => { let z = size; do { g.font = `${w} ${z}px ${F}`; z -= 2; } while (g.measureText(t).width > max && z > 14); };
-  g.fillStyle = '#ff7a00'; fit('💎 ' + o.product_name, 640, 40); g.fillText('💎 ' + o.product_name, W / 2, 440);
-  // tarjeta con datos
+  const W = 720, H = 1100, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d'), F = 'system-ui,-apple-system,Segoe UI,Roboto,sans-serif', OR = '#ff7a00', GR = '#22c55e';
   const rr = (x, y, w, h, r) => { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); };
-  rr(40, 480, W - 80, 380, 24); g.fillStyle = '#16161a'; g.fill(); g.strokeStyle = '#2a2a31'; g.lineWidth = 2; g.stroke();
-  const rows = [['ID del jugador', o.target], ['Nombre de la cuenta', o.player_name || 'No disponible'], ['Tiempo en completarse', o.done_ts && o.created_ts ? fmtDur(o.done_ts - o.created_ts) : '—'], ['Fecha', o.done_ts ? fmtWhen(o.done_ts) : o.created_at]];
-  rows.forEach(([k, v], i) => {
-    const y = 520 + i * 90;
-    g.fillStyle = '#a1a1aa'; g.font = `600 22px ${F}`; g.fillText(k, W / 2, y + 22);
-    g.fillStyle = '#f4f4f5'; fit(String(v), 600, 34, 700); g.fillText(String(v), W / 2, y + 62);
-    if (i < rows.length - 1) { g.fillStyle = '#2a2a31'; g.fillRect(90, y + 76, W - 180, 2); }
+  const fit = (t, max, size, w = 800) => { let z = size; do { g.font = `${w} ${z}px ${F}`; z -= 2; } while (g.measureText(t).width > max && z > 14); };
+  // fondo
+  const bg = g.createLinearGradient(0, 0, W, H); bg.addColorStop(0, '#15100a'); bg.addColorStop(.5, '#0d0d10'); bg.addColorStop(1, '#0a0a0c'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  const gl = g.createRadialGradient(W / 2, 0, 20, W / 2, 0, 560); gl.addColorStop(0, 'rgba(255,122,0,.30)'); gl.addColorStop(1, 'rgba(255,122,0,0)'); g.fillStyle = gl; g.fillRect(0, 0, W, H);
+  // tarjeta principal
+  const X = 36, Y = 36, CW = W - 72, CH = H - 72;
+  g.save(); g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 40; g.shadowOffsetY = 12; rr(X, Y, CW, CH, 32); g.fillStyle = '#17171c'; g.fill(); g.restore();
+  g.save(); rr(X, Y, CW, CH, 32); g.clip();
+  const hd = g.createLinearGradient(X, Y, X + CW, Y + 230); hd.addColorStop(0, '#ff8a1f'); hd.addColorStop(1, '#ff4d00'); g.fillStyle = hd; g.fillRect(X, Y, CW, 230);
+  g.fillStyle = 'rgba(255,255,255,.07)'; g.beginPath(); g.arc(X + CW - 40, Y + 20, 150, 0, 7); g.fill(); g.beginPath(); g.arc(X + 30, Y + 230, 90, 0, 7); g.fill();
+  g.restore();
+  g.textAlign = 'center';
+  // logo + tienda
+  const logo = await loadImg(storeInfo.logo || 'logo.jpg'), cx = W / 2, ly = 96;
+  g.beginPath(); g.arc(cx, ly, 54, 0, 7); g.fillStyle = '#fff'; g.fill();
+  if (logo) { g.save(); g.beginPath(); g.arc(cx, ly, 50, 0, 7); g.clip(); g.drawImage(logo, cx - 50, ly - 50, 100, 100); g.restore(); }
+  g.fillStyle = '#fff'; { const nm = (storeInfo.name || 'SHOP FAST').toUpperCase(); fit(nm, 560, 34, 800); g.fillText(nm, cx, 200); }
+  // sello de éxito
+  const sy = 300;
+  g.beginPath(); g.arc(cx, sy, 62, 0, 7); g.fillStyle = 'rgba(34,197,94,.16)'; g.fill();
+  g.beginPath(); g.arc(cx, sy, 46, 0, 7); g.fillStyle = GR; g.fill();
+  g.strokeStyle = '#fff'; g.lineWidth = 9; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath(); g.moveTo(cx - 19, sy + 2); g.lineTo(cx - 5, sy + 17); g.lineTo(cx + 22, sy - 14); g.stroke();
+  g.fillStyle = '#f4f4f5'; g.font = `800 38px ${F}`; g.fillText('Recarga realizada con éxito', cx, 410);
+  // píldora de estado
+  rr(cx - 78, 430, 156, 36, 18); g.fillStyle = 'rgba(34,197,94,.15)'; g.fill(); g.fillStyle = '#4ade80'; g.font = `700 17px ${F}`; g.fillText('●  COMPLETADA', cx, 454);
+  // paquete (con diamante dibujado)
+  const px = X + 34, pw = CW - 68;
+  rr(px, 496, pw, 120, 22); g.fillStyle = '#1f1f26'; g.fill(); g.strokeStyle = 'rgba(255,122,0,.45)'; g.lineWidth = 2; g.stroke();
+  const dx = px + 56, dy = 556; g.fillStyle = '#38bdf8'; g.beginPath(); g.moveTo(dx - 26, dy - 8); g.lineTo(dx - 14, dy - 24); g.lineTo(dx + 14, dy - 24); g.lineTo(dx + 26, dy - 8); g.lineTo(dx, dy + 26); g.closePath(); g.fill();
+  g.fillStyle = 'rgba(255,255,255,.55)'; g.beginPath(); g.moveTo(dx - 26, dy - 8); g.lineTo(dx + 26, dy - 8); g.lineTo(dx, dy + 26); g.closePath(); g.globalAlpha = .35; g.fill(); g.globalAlpha = 1;
+  g.textAlign = 'left'; g.fillStyle = '#a1a1aa'; g.font = `600 18px ${F}`; g.fillText('PAQUETE', px + 104, 538);
+  g.fillStyle = OR; fit(o.product_name, pw - 130, 32, 800); g.fillText(o.product_name, px + 104, 584); g.textAlign = 'center';
+  // datos
+  const rows = [['ID DEL JUGADOR', o.target, 1], ['NOMBRE DE LA CUENTA', o.player_name || 'No disponible', !!o.player_name], ['TIEMPO EN COMPLETARSE', o.done_ts && o.created_ts ? fmtDur(o.done_ts - o.created_ts) : '—', 1], ['FECHA Y HORA', o.done_ts ? fmtWhen(o.done_ts) : o.created_at, 1]];
+  let y = 664;
+  rows.forEach(([k, v, strong], i) => {
+    g.textAlign = 'left'; g.fillStyle = '#8b8b95'; g.font = `700 17px ${F}`; g.fillText(k, px + 8, y + 18);
+    g.textAlign = 'right'; g.fillStyle = strong ? '#f4f4f5' : '#8b8b95'; fit(String(v), pw - 270, 30, 700); g.fillText(String(v), px + pw - 8, y + 20);
+    if (i < rows.length - 1) { g.fillStyle = '#2a2a33'; g.fillRect(px, y + 46, pw, 2); }
+    y += 70;
   });
-  g.fillStyle = '#a1a1aa'; g.font = `500 22px ${F}`; g.fillText(`Pedido #${o.id}`, W / 2, 920);
-  g.fillStyle = '#ff7a00'; g.font = `700 24px ${F}`; g.fillText('Gracias por tu compra 🔥', W / 2, 980);
+  // perforado tipo ticket
+  const py = 972; g.fillStyle = '#0b0b0e'; g.beginPath(); g.arc(X, py, 16, 0, 7); g.fill(); g.beginPath(); g.arc(X + CW, py, 16, 0, 7); g.fill();
+  g.strokeStyle = '#34343d'; g.lineWidth = 2; g.setLineDash([10, 9]); g.beginPath(); g.moveTo(X + 24, py); g.lineTo(X + CW - 24, py); g.stroke(); g.setLineDash([]);
+  g.textAlign = 'center'; g.fillStyle = '#8b8b95'; g.font = `600 20px ${F}`; g.fillText(`Pedido #${o.id}`, cx, 1018);
+  g.fillStyle = OR; g.font = `700 22px ${F}`; g.fillText('¡Gracias por tu compra!', cx, 1052);
   return new Promise(ok => cv.toBlob(ok, 'image/png'));
 }
 async function shareReceipt(o, btn) {
