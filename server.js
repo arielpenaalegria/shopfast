@@ -876,7 +876,17 @@ route('POST', '/api/telegram-unlink', 'any', async (req, res, u) => {
 });
 route('GET', '/api/me-extra', 'any', async (req, res, u) => {
   const d = await C.users.findOne({ _id: u.id });
-  send(res, 200, { telegram: TG.enabled(), telegram_linked: !!d.telegram_chat_id });
+  send(res, 200, { telegram: TG.enabled(), telegram_linked: !!d.telegram_chat_id, store_name: d.store_name || '', store_logo: d.store_logo || '' });
+});
+// Tienda del revendedor: nombre e icono que salen en sus comprobantes
+route('POST', '/api/store', 'reseller', async (req, res, u, b) => {
+  const name = String(b.name || '').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 40);
+  const logo = b.logo ? String(b.logo) : '';
+  if (logo && (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(logo) || logo.length > 150000)) return send(res, 400, { error: 'Imagen no válida' });
+  const set = { store_name: name };
+  if (b.logo !== undefined) set.store_logo = logo;
+  await C.users.updateOne({ _id: u.id }, { $set: set });
+  send(res, 200, { ok: true });
 });
 
 // ---------- Solicitudes de saldo: USDT BEP20 ----------
@@ -1590,7 +1600,7 @@ const server = http.createServer(async (req, res) => {
       let body = {};
       if (req.method === 'POST') {
         if (!(req.headers['content-type'] || '').startsWith('application/json')) return send(res, 415, { error: 'Content-Type debe ser JSON' });
-        body = await readBody(req, url.pathname === '/api/topup-requests' ? 2500000 : url.pathname === '/api/admin/restore' ? 60e6 : 20000); // la foto del comprobante va en la solicitud de saldo
+        body = await readBody(req, url.pathname === '/api/topup-requests' ? 2500000 : url.pathname === '/api/admin/restore' ? 60e6 : url.pathname === '/api/store' ? 200000 : 20000); // la foto del comprobante va en la solicitud de saldo
       }
       let user = null;
       const ap = url.pathname, doAudit = (req.method === 'POST' && !AUDIT_SKIP.has(ap)) || AUDIT_GET.has(ap);
