@@ -188,7 +188,11 @@ const mock = {
     if (o.target.endsWith('2222')) return { status: 'review', rawStatus: 'partially_completed', failure: null };
     return { status: 'completed', rawStatus: 'completed', failure: null };
   },
-  async validatePlayer() { return { status: 'unverified', reason: 'not_supported', name: null }; },
+  async validatePlayer({ targetPayload } = {}) {
+    const t = String(Object.values(targetPayload || {})[0] || '');
+    if (t.endsWith('0000')) return { status: 'invalid', reason: 'not_found', name: null };
+    return { status: 'valid', reason: null, name: 'Jugador ' + t.slice(-4) };
+  },
   async webhookTest() { return { deliveryId: 'mock-delivery', status: 'pending' }; },
   async getBalance() { return { availableE4: 4700000, heldE4: 300000, totalE4: 5000000, currency: 'USD' }; },
   async ping() { return true; },

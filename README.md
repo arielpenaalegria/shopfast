@@ -143,3 +143,8 @@ Entra con esa clave y **borra las dos variables**. Si no existía ningún admin,
   desde esa dirección se abona solo a ese revendedor (cualquier monto desde 0.01, con las mismas confirmaciones), sin que pegue hash ni mande comprobante.
   El panel revisa la blockchain cada 30 s y **solo mira bloques nuevos** (nunca abona pagos viejos). Se puede apagar con la casilla de esa misma tarjeta.
   Requiere `USDT_WALLET` y `BSC_RPC_URL` (NodeReal). Las billeteras desconocidas o de otro revendedor nunca se abonan solas.
+
+
+## Comprobante de recarga (sin precio)
+Cuando una recarga pasa a *Completada* el panel muestra un efecto de éxito (confeti) con una imagen de comprobante: paquete/diamantes, ID del jugador, nombre de la cuenta, tiempo que tardó y fecha. **Nunca incluye el precio.** Se puede compartir o guardar, y también desde *Historial → 🧾 Comprobante*.
+El nombre de la cuenta sale de la verificación de ID de Central One (si el revendedor no pulsó «Verificar ID», el panel lo consulta solo en segundo plano al hacer el pedido). Si el juego no devuelve nombre, el comprobante dice «No disponible».
