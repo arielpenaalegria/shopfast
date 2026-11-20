@@ -229,23 +229,31 @@ $('login').querySelector('h2').after(el('div', { class: 'sub' }, 'Entra para rec
   };
   $('login').append(el('button', { class: 'ghost', style: 'margin-top:12px', onclick: () => form.classList.toggle('hidden') }, '¿Olvidaste tu contraseña?'), form);
 }
+// Google: el script se carga una sola vez; cada botón registra su propia respuesta
+let gsiP = null;
+const gsiLoad = () => gsiP || (gsiP = new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true; sc.onload = ok; sc.onerror = () => no(new Error('No se pudo cargar Google')); document.head.append(sc); }));
+async function gsiButton(box, clientId, onCred, text) {
+  await gsiLoad();
+  google.accounts.id.initialize({ client_id: clientId, ux_mode: 'popup', callback: r => onCred(r.credential) });
+  google.accounts.id.renderButton(box, { theme: 'filled_black', size: 'large', shape: 'pill', text: text || 'continue_with', locale: 'es', width: Math.min(320, (box.parentElement && box.parentElement.clientWidth || 340) - 44) });
+}
 // Inicio de sesión con Google (si el dueño puso GOOGLE_CLIENT_ID)
 api('GET', '/api/public-config').then(cfg => {
   if (!cfg.google_client_id) return;
   const gbox = el('div', { class: 'gbox' }), gm = el('div');
+  const gcode = el('input', { placeholder: 'Código de tu app de autenticación', inputmode: 'numeric', autocomplete: 'one-time-code', class: 'hidden' }), gb2 = el('button', { class: 'hidden' }, 'Confirmar código');
   const sep = el('div', { class: 'sep' }, el('span', {}, 'o con tu correo'));
-  $('lu').before(gbox, gm, sep);
-  const sc = document.createElement('script'); sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true;
-  sc.onload = () => {
+  $('lu').before(gbox, gm, gcode, gb2, sep);
+  let cred = null;
+  const go = async () => {
     try {
-      google.accounts.id.initialize({ client_id: cfg.google_client_id, ux_mode: 'popup', callback: async r => {
-        try { await api('POST', '/api/google', { credential: r.credential }); gm.replaceChildren(); boot(); } catch (e) { msg(gm, e.message, 'err'); }
-      } });
-      google.accounts.id.renderButton(gbox, { theme: 'filled_black', size: 'large', shape: 'pill', text: 'continue_with', locale: 'es', width: Math.min(320, ($('login').clientWidth || 340) - 44) });
-    } catch { gbox.remove(); sep.remove(); }
+      const d = await api('POST', '/api/google', { credential: cred, code: gcode.value });
+      if (d.need_2fa) { gcode.classList.remove('hidden'); gb2.classList.remove('hidden'); gcode.focus(); return msg(gm, 'Escribe el código de tu app de autenticación.', 'ok'); }
+      gm.replaceChildren(); gcode.value = ''; gcode.classList.add('hidden'); gb2.classList.add('hidden'); boot();
+    } catch (e) { msg(gm, e.message, 'err'); }
   };
-  sc.onerror = () => { gbox.remove(); sep.remove(); };
-  document.head.append(sc);
+  gb2.onclick = go; gcode.addEventListener('keydown', e => e.key === 'Enter' && go());
+  gsiButton(gbox, cfg.google_client_id, c => { cred = c; go(); }).catch(() => { gbox.remove(); sep.remove(); });
 }).catch(() => {});
 // Registro de revendedores (si el admin lo tiene abierto)
 api('GET', '/api/public-config').then(cfg => {
@@ -367,7 +375,35 @@ function sessionsCard() {
   return card('Sesiones', el('div', { class: 'mut' }, 'Si perdiste un teléfono o crees que alguien entró, cierra tu sesión en todos los dispositivos (también en este).'),
     el('div', { class: 'acts' }, el('button', { class: 'red sm', onclick: async () => { if (!confirm('¿Cerrar la sesión en todos tus dispositivos?')) return; try { await api('POST', '/api/logout-all', {}); } catch {} show('login'); } }, 'Cerrar todas las sesiones')));
 }
-const accountCards = staff => [passwordCard(), staff ? twoFaCard() : null, sessionsCard()];
+/** Vincular la cuenta del panel con una cuenta de Google (para entrar con un toque). Pide la contraseña (y el código 2FA si lo tienes). */
+function googleCard() {
+  const body = el('div', { class: 'mut' }, 'Cargando…'), box = el('div'), c = card('Cuenta de Google', body, box);
+  api('GET', '/api/google-status').then(st => {
+    if (!st.enabled) { c.remove(); return; }
+    const pw = el('input', { type: 'password', placeholder: 'Tu contraseña actual', autocomplete: 'current-password' });
+    const cd = st.needs_code ? el('input', { placeholder: 'Código de tu app de autenticación', inputmode: 'numeric', autocomplete: 'one-time-code' }) : null;
+    const draw = (linked, email) => {
+      body.replaceChildren(); box.replaceChildren();
+      if (linked) {
+        const off = el('button', { class: 'red sm' }, 'Desvincular Google');
+        off.onclick = async () => { off.disabled = true; try { await api('POST', '/api/google-unlink', { password: pw.value, code: cd ? cd.value : '' }); pw.value = ''; if (cd) cd.value = ''; draw(false); msg(box, 'Google desvinculada.', 'ok'); } catch (e) { msg(box, e.message, 'err'); } off.disabled = false; };
+        put(body, el('div', { class: 'msg ok', style: 'margin:0 0 10px' }, '✓ Vinculada' + (email ? ': ' + email : '') + '. Ya puedes entrar con el botón de Google en la pantalla de inicio.' + (st.needs_code ? ' Seguirá pidiéndote el código de dos pasos.' : '')),
+          el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Para desvincular escribe tu contraseña' + (cd ? ' y el código' : '') + ':'), el('div', { class: 'row' }, pw), cd ? el('div', { class: 'row' }, cd) : null, el('div', { class: 'acts' }, off));
+      } else {
+        const gb = el('div', { class: 'gbox', style: 'justify-content:flex-start' });
+        put(body, el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Vincula tu cuenta de Google para entrar con un toque. Por seguridad escribe tu contraseña' + (cd ? ' y el código de tu app' : '') + ' y luego elige tu cuenta de Google:'),
+          el('div', { class: 'row' }, pw), cd ? el('div', { class: 'row' }, cd) : null, gb);
+        gsiButton(gb, st.client_id, async cred => {
+          try { const r = await api('POST', '/api/google-link', { credential: cred, password: pw.value, code: cd ? cd.value : '' }); pw.value = ''; if (cd) cd.value = ''; draw(true, r.email); msg(box, 'Cuenta de Google vinculada.', 'ok'); }
+          catch (e) { msg(box, e.message, 'err'); }
+        }, 'continue_with').catch(() => msg(box, 'No se pudo cargar Google. Revisa tu conexión.', 'err'));
+      }
+    };
+    draw(st.linked, st.email);
+  }).catch(() => c.remove());
+  return c;
+}
+const accountCards = staff => [passwordCard(), staff ? twoFaCard() : null, googleCard(), sessionsCard()];
 
 /* =================== COMPROBANTE + EFECTO DE ÉXITO (sin precio) =================== */
 const fmtDur = ms => { const t = Math.max(0, Math.round(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
@@ -739,7 +775,7 @@ async function resellerView() {
         el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')));
   }
   if (rtab === 'cuenta') {
-    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), storeCard(extra), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), storeCard(extra), googleCard(), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
   }
   // Refresco automático mientras haya algo en curso, pero sin borrar lo que el revendedor está escribiendo
   if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) || reqs.some(r => r.status === 'pending')) {
@@ -842,6 +878,26 @@ async function adminView() {
       item(true, 'Bloqueo por intentos fallidos', 'Tras varios intentos fallidos se bloquea el acceso 15 minutos y recibes aviso por Telegram.'),
       item(true, 'Aviso de IP nueva', 'Si entras desde otra conexión, te avisamos por Telegram.'),
       item(true, 'Cerrar sesiones', 'Si crees que alguien entró, abajo puedes cerrar todas las sesiones y cambiar tu contraseña.'))),
+      (() => {
+        const box = el('div'), btn = el('button', {}, '🔍 Auditar depósitos USDT');
+        btn.onclick = async () => {
+          btn.disabled = true; btn.textContent = 'Revisando la blockchain…'; box.replaceChildren();
+          try {
+            const d = await api('GET', '/api/admin/audit-deposits');
+            put(box, el('div', { class: 'msg ' + (d.suspicious ? 'err' : 'ok'), style: 'margin:10px 0' }, d.suspicious
+              ? `⚠ ${d.suspicious} de ${d.checked} depósitos abonados son sospechosos: ${d.usdt.toFixed(2)} USDT en total.`
+              : `✓ Revisados ${d.checked} depósitos abonados: ninguno parece un pago viejo.`),
+              d.per_user.length ? el('div', { class: 'list' }, ...d.per_user.map(u => el('div', {}, el('div', { class: 'l' }, el('b', {}, u.user), el('div', { class: 'mut' }, u.count + ' depósito(s) sospechoso(s)')), el('div', { class: 'r' }, el('b', {}, u.usdt.toFixed(2) + ' USDT'))))) : null,
+              d.items.length ? el('h3', { style: 'margin:14px 0 6px' }, 'Detalle') : null,
+              ...d.items.map(x => el('div', { class: 'msg ' + (x.level === 'high' ? 'err' : 'warn'), style: 'margin:0 0 8px' },
+                el('b', {}, `#${x.id} · ${x.user} · ${x.usdt.toFixed(2)} USDT`), el('div', {}, x.level === 'unknown' ? 'No se pudo leer la fecha del pago.' : `El pago es de ${x.tx_at}, ${x.age_h} h ANTES de la solicitud (${x.requested_at}).`),
+                el('div', { class: 'mut' }, (x.auto ? 'Abonado automáticamente · ' : 'Aprobado a mano · ') + (x.user_created ? 'cuenta creada ' + x.user_created : '')),
+                el('a', { href: 'https://bscscan.com/tx/' + x.tx, target: '_blank', rel: 'noopener' }, 'Ver en BscScan'))));
+          } catch (e) { msg(box, e.message, 'err'); }
+          btn.disabled = false; btn.textContent = '🔍 Auditar depósitos USDT';
+        };
+        return card('Auditar depósitos USDT', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Compara la fecha real de cada pago en la blockchain con la fecha de la solicitud. Un pago muy anterior a su solicitud suele ser un hash viejo reclamado por otra persona. Revisa los últimos 300 depósitos abonados.'), el('div', { class: 'acts' }, btn), box);
+      })(),
       ...accountCards(true));
   }
   if (OWN) {
