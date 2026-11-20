@@ -1,5 +1,5 @@
 'use strict';
-document.head.append(Object.assign(document.createElement('style'), { textContent: '.sl{width:56px;height:56px;border-radius:14px;object-fit:cover;border:1px solid var(--line)}.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.storelogo{width:56px;height:56px;border-radius:14px;object-fit:cover;border:1px solid var(--line)}.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -137,7 +137,7 @@ function payInfo(text) {
 function storeCard(extra) {
   let logo = extra.store_logo || '';
   const name = el('input', { maxlength: 40, placeholder: 'Nombre de tu tienda', value: extra.store_name || '' }), box = el('div');
-  const prev = el('img', { class: 'sl', alt: '' }), setPrev = () => { prev.src = logo || 'logo.jpg'; };
+  const prev = el('img', { class: 'storelogo', alt: '' }), setPrev = () => { prev.src = logo || 'logo.jpg'; };
   setPrev();
   const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
   file.onchange = async () => {
@@ -666,15 +666,18 @@ async function resellerView() {
         el('div', { class: 'acts' }, sendBtn), reqBox));
   }
 
-  const tabs = [['recargar', 'Recargar'], ['historial', 'Mis recargas'], ['saldo', 'Pedir saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', 'Cuenta']];
+  const tabs = [['recargar', '⚡ Recargar'], ['historial', '🧾 Historial'], ['saldo', '💰 Saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', '👤 Cuenta']];
   put(out, 
     me.maintenance ? el('div', { class: 'msg err', style: 'margin:0 0 12px;white-space:pre-wrap' }, '🛠 ' + me.maintenance.msg) : null,
-    me.announcement ? el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement) : null,
-    el('div', { class: 'card hero' }, el('div', { class: 'mut' }, 'Mis saldos'),
-      el('div', { class: 'bals' }, ...CURS.map(c => el('div', {}, el('span', {}, CUR_ICON[c] + ' ' + CUR_LONG[c]),
-        el('b', {}, c === 'usdt' ? Number(bal[c]).toFixed(2) : Math.round(bal[c]).toLocaleString('es'), el('small', {}, c === 'usdt' ? ' USDT' : ' CUP'))))),
-      el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo'))),
-    el('div', { class: 'tabs' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
+    me.announcement ? (() => {
+      const lines = String(me.announcement).split('\n').filter(l => l.trim()), long = lines.length > 2 || me.announcement.length > 140;
+      if (!long) return el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement);
+      return el('details', { class: 'ann' }, el('summary', {}, el('span', {}, '📢 ' + lines[0]), el('em', {}, 'Ver todo')), el('div', { class: 'annb' }, me.announcement));
+    })() : null,
+    el('div', { class: 'card hero' }, el('div', { class: 'heroh' }, el('span', {}, 'Mis saldos'), el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo')),
+      el('div', { class: 'bal3' }, ...CURS.map(c => el('div', {}, el('span', {}, CUR_ICON[c] + ' ' + ({ usdt: 'USDT', transfer: 'Transf.', mobile: 'Saldo móvil' })[c]),
+        el('b', {}, c === 'usdt' ? Number(bal[c]).toFixed(2) : Math.round(bal[c]).toLocaleString('es')), el('small', {}, c === 'usdt' ? 'USDT' : 'CUP'))))),
+    el('div', { class: 'tabs tabs4' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
 
   if (rtab === 'recargar' && me.maintenance) put(out, card('Recargas en pausa', el('div', { class: 'mut' }, 'Mientras dure el mantenimiento no se pueden enviar recargas. Tus saldos están seguros y puedes seguir pidiendo saldo.')));
   else if (rtab === 'recargar') {

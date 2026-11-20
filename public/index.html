@@ -187,6 +187,20 @@ header{backdrop-filter:blur(14px);background:#0b0b0dcc;position:sticky;top:0;z-i
 .card{border:1px solid #ffffff0f;box-shadow:0 14px 36px -24px #000}
 .tabs button{transition:transform .15s,background .15s}.tabs button:active{transform:scale(.96)}
 button:not(.ghost):active{transform:scale(.98)}
+
+/* ===== Orden del panel del revendedor ===== */
+.heroh{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}.heroh>span{font-weight:700;color:#ffedd5}
+.bal3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.bal3>div{background:#00000038;border:1px solid #ffffff1a;border-radius:14px;padding:10px 6px;text-align:center;min-width:0}
+.bal3 span{display:block;font-size:.72rem;color:#ffedd5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bal3 b{display:block;font-size:1.2rem;margin-top:3px;overflow-wrap:anywhere}.bal3 small{font-size:.66rem;color:#ffedd5;opacity:.85;letter-spacing:.5px}
+.tabs4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;overflow:visible}
+.tabs4 button{padding:10px 2px;font-size:.8rem;white-space:nowrap;border-radius:14px}
+.ann{background:#3b2a06;color:#fcd34d;border:1px solid #ffffff10;border-radius:12px;margin:0 0 12px}
+.ann summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;font-size:.92rem}
+.ann summary::-webkit-details-marker{display:none}.ann summary span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.ann summary em{font-style:normal;font-size:.78rem;background:#fcd34d22;border-radius:999px;padding:3px 10px;white-space:nowrap}
+.ann[open] summary em{display:none}.annb{white-space:pre-wrap;padding:0 12px 12px;font-size:.92rem;line-height:1.5}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b>Shop Fast<small>Panel de revendedores</small></b></div><span id="who"></span></header>
 <main>
