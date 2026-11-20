@@ -35,6 +35,15 @@ const CURS = ['usdt', 'transfer', 'mobile'];
 const CUR_S = { usdt: 'USDT', transfer: 'CUP transf.', mobile: 'CUP saldo' };
 const CUR_LONG = { usdt: 'USDT', transfer: 'CUP Transferencia', mobile: 'CUP Saldo móvil' };
 const CUR_ICON = { usdt: '💲', transfer: '🏦', mobile: '📱' };
+/* Iconos del diseño neón (SVG embebidos, sin pedir nada a internet). */
+const svgUri = x => 'data:image/svg+xml,' + encodeURIComponent(x);
+const ICO = {
+  shield: svgUri('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M20 3 34 8v11c0 9-6 15-14 18C12 34 6 28 6 19V8z" fill="#22c55e" stroke="#bbf7d0" stroke-width="2" stroke-linejoin="round"/><path d="m13 20 5 5 9-10" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'),
+  wallet: svgUri('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc247"/><stop offset="1" stop-color="#f06a00"/></linearGradient></defs><rect x="4" y="11" width="38" height="30" rx="8" fill="url(#g)" stroke="#ffe0a3" stroke-width="1.5"/><path d="M8 11l26-6a4 4 0 0 1 5 4v2" fill="#d35400"/><rect x="26" y="21" width="20" height="12" rx="6" fill="#ffb347" stroke="#ffe0a3" stroke-width="1.5"/><circle cx="35" cy="27" r="2.6" fill="#7a3b00"/></svg>'),
+  plane: svgUri('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.5 11 21.5 3 15 21l-3.6-6.6z" fill="#e9d5ff" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/><path d="M11.4 14.4 21.5 3" stroke="#7c3aed" stroke-width="1.6" stroke-linecap="round"/></svg>'),
+  bigshield: svgUri('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c084fc"/><stop offset="1" stop-color="#6d28d9"/></linearGradient><linearGradient id="b" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff9a1f"/><stop offset="1" stop-color="#ec4899"/></linearGradient></defs><ellipse cx="60" cy="84" rx="54" ry="15" fill="none" stroke="url(#b)" stroke-width="4" transform="rotate(-12 60 84)" opacity=".6"/><path d="M60 8 96 22v34c0 24-16 40-36 50C40 96 24 80 24 56V22z" fill="url(#a)" stroke="#e9d5ff" stroke-width="2.5" stroke-linejoin="round"/><path d="m42 56 13 13 25-27" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 84a54 15 0 0 0 108 0" fill="none" stroke="url(#b)" stroke-width="4" transform="rotate(-12 60 84)"/></svg>')
+};
+const icon = (k, cls = '') => el('img', { src: ICO[k], alt: '', class: cls });
 /** Monto con su moneda: USDT con 2 decimales, CUP en enteros. */
 const money = (n, c = 'usdt') => (!c || c === 'usdt') ? Number(n).toFixed(2) + ' USDT' : Math.round(Number(n)).toLocaleString('es') + ' ' + CUR_S[c];
 const priceIn = (p, c) => p.prices ? (p.prices[c] != null ? p.prices[c] : (c === 'usdt' ? p.price : null)) : (c === 'usdt' ? p.price : null);
@@ -162,10 +171,10 @@ function storeCard(extra) {
 /** Cambia el logo y el nombre de la cabecera por los de la tienda del revendedor. */
 function paintBrand() {
   const b = document.querySelector('header .brand'); if (!b) return;
-  const img = b.querySelector('img'), t = b.querySelector('b');
-  if (!b.dataset.def) b.dataset.def = t.firstChild.textContent;
+  const img = b.querySelector('img'), bn = b.querySelector('.bn'); if (!bn) return;
   if (img) img.src = storeInfo.logo || 'logo.jpg';
-  if (t.firstChild) t.firstChild.textContent = storeInfo.name || b.dataset.def;
+  const w = (storeInfo.name || 'Shop Fast').trim().split(/\s+/), last = w.length > 1 ? w.pop() : null;
+  bn.replaceChildren(w.join(' ') + (last ? ' ' : ''), last ? el('em', {}, last) : '');
 }
 function telegramCard(extra, refresh) {
   if (!extra.telegram) return null;
@@ -713,20 +722,27 @@ async function resellerView() {
         el('div', { class: 'acts' }, sendBtn), reqBox));
   }
 
-  const tabs = [['recargar', '⚡ Recargar'], ['historial', '🧾 Historial'], ['saldo', '💰 Saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', '👤 Cuenta']];
-  put(out, 
-    me.maintenance ? el('div', { class: 'msg err', style: 'margin:0 0 12px;white-space:pre-wrap' }, '🛠 ' + me.maintenance.msg) : null,
+  const tabs = [['recargar', '⚡', 'Recargar'], ['historial', '🧾', 'Historial'], ['saldo', '💰', 'Saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', '👤', 'Cuenta']];
+  const CUR_NAME = { usdt: 'USDT', transfer: 'Transf.', mobile: 'Saldo móvil' };
+  const CUR_IC = { usdt: el('i', { class: 'dl' }, '$'), transfer: el('i', { class: 'ic' }, '🏛️'), mobile: el('i', { class: 'ic' }, '📱') };
+  put(out,
+    me.maintenance ? (() => {
+      const m = String(me.maintenance.msg || '').trim(), short = m.length <= 20;
+      return el('div', { class: 'nb maint' }, el('div', { class: 'ni' }, '🛠️'),
+        el('div', { class: 'nt' }, el('b', {}, short && m ? m : 'Recargas pausadas'), el('span', {}, short ? 'Las recargas están temporalmente pausadas.' : m)),
+        el('div', { class: 'ni w' }, '⚠️'));
+    })() : null,
     me.announcement ? (() => {
       const lines = String(me.announcement).split('\n').filter(l => l.trim()), long = lines.length > 2 || me.announcement.length > 140;
-      if (!long) return el('div', { class: 'msg warn', style: 'margin:0 0 12px;white-space:pre-wrap' }, '📢 ' + me.announcement);
-      return el('details', { class: 'ann' }, el('summary', {}, el('span', {}, '📢 ' + lines[0]), el('em', {}, 'Ver todo')), el('div', { class: 'annb' }, me.announcement));
+      if (!long) return el('div', { class: 'ann static' }, icon('shield', 'shield'), el('span', {}, me.announcement));
+      return el('details', { class: 'ann' }, el('summary', {}, icon('shield', 'shield'), el('span', {}, lines[0]), el('em', {}, 'Ver todo')), el('div', { class: 'annb' }, me.announcement));
     })() : null,
-    el('div', { class: 'card hero' }, el('div', { class: 'heroh' }, el('span', {}, 'Mis saldos'), el('button', { class: 'sec sm', onclick: () => { rtab = 'saldo'; resellerView(); } }, '+ Pedir saldo')),
-      el('div', { class: 'bal3' }, ...CURS.map(c => el('div', {}, el('span', {}, CUR_ICON[c] + ' ' + ({ usdt: 'USDT', transfer: 'Transf.', mobile: 'Saldo móvil' })[c]),
+    el('div', { class: 'card hero' }, el('div', { class: 'heroh' }, el('span', {}, icon('wallet'), 'Mis saldos'), el('button', { onclick: () => { rtab = 'saldo'; resellerView(); } }, icon('plane'), 'Pedir saldo')),
+      el('div', { class: 'bal3' }, ...CURS.map(c => el('div', { class: 't-' + c }, el('span', {}, CUR_IC[c].cloneNode(true), CUR_NAME[c]),
         el('b', {}, c === 'usdt' ? Number(bal[c]).toFixed(2) : Math.round(bal[c]).toLocaleString('es')), el('small', {}, c === 'usdt' ? 'USDT' : 'CUP'))))),
-    el('div', { class: 'tabs tabs4' }, ...tabs.map(([k, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, l))));
+    el('div', { class: 'tabs tabs4' }, ...tabs.map(([k, ic, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, el('span', { class: 'ti' }, ic), l))));
 
-  if (rtab === 'recargar' && me.maintenance) put(out, card('Recargas en pausa', el('div', { class: 'mut' }, 'Mientras dure el mantenimiento no se pueden enviar recargas. Tus saldos están seguros y puedes seguir pidiendo saldo.')));
+  if (rtab === 'recargar' && me.maintenance) put(out, el('div', { class: 'pausecard' }, el('div', { class: 'pi' }, el('div', { class: 'dot' }, 'i'), el('div', {}, el('h2', {}, 'Recargas en pausa'), el('p', {}, 'Mientras dure el mantenimiento no se pueden enviar recargas. Tus saldos están seguros y puedes seguir pidiendo saldo.'))), icon('bigshield', 'big-shield')));
   else if (rtab === 'recargar') {
     renderBuy();
     put(out, card('Nueva recarga', buy, box, el('div', { class: 'mut', style: 'margin-top:10px' }, 'Una recarga puede tardar desde minutos hasta un par de horas. No la repitas mientras esté "En proceso": podría llegar dos veces.')));
