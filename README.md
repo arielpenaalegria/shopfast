@@ -174,3 +174,13 @@ El revendedor escribe cuánto va a enviar (ej. 5 USDT) y el panel le da un monto
 
 ## Seguridad de la cuenta de administrador
 En el panel del dueño hay una pestaña **Seguridad** (⚠️ mientras la verificación en dos pasos esté apagada) con el estado de protección, la activación de 2FA (Google Authenticator, Authy…), el cambio de contraseña y el cierre de todas las sesiones. Mientras no actives la 2FA aparece un aviso rojo en todas las pestañas. Si pierdes el celular y los códigos de recuperación: variable `RESET_2FA_FOR=tu_usuario` en Render y la borras después de entrar.
+
+## Auditar depósitos USDT
+En *Seguridad → Auditar depósitos USDT* (solo dueño) el panel consulta la blockchain y compara la fecha real de cada pago abonado con la de su solicitud. Un pago más de 2 h anterior a su solicitud sale como «sospechoso» (amarillo) y de más de 24 h como «muy sospechoso» (rojo), con usuario, monto, fecha del pago, enlace a BscScan y el total por cuenta. Sirve para detectar hashes viejos reclamados por otra persona. Revisa los últimos 300 depósitos.
+
+## Vincular tu cuenta (admin, sub-admin o revendedor) con Google
+Con `GOOGLE_CLIENT_ID` configurado, en tu perfil aparece la tarjeta **Cuenta de Google** (dueño y sub-admin: pestaña *Seguridad* / *Mi cuenta*; revendedor: pestaña *Cuenta*). Escribes tu contraseña actual (y el código 2FA si lo tienes), eliges tu cuenta de Google y queda vinculada: desde entonces entras con el botón de Google de la pantalla de inicio, aunque tu correo de Google sea distinto al usuario del panel. Se puede desvincular con la contraseña.
+- Una cuenta de Google solo puede estar vinculada a UNA cuenta del panel.
+- **Google no salta la verificación en dos pasos**: si tu cuenta tiene 2FA, después de elegir Google se pide el código.
+- Las cuentas del equipo (admin y sub-admin) solo entran con Google si ellas mismas la vincularon antes; nunca por coincidencia de correo.
+- Vincular/desvincular queda en el Registro y avisa por Telegram.

@@ -129,7 +129,7 @@ function quotaOf(u) {
   return out;
 }
 const AUDIT_LABEL = {
-  '/api/login': 'Inicio de sesión', '/api/google': 'Inicio de sesión con Google', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
+  '/api/login': 'Inicio de sesión', '/api/google': 'Inicio de sesión con Google', '/api/google-link': 'Vincular cuenta de Google', '/api/google-unlink': 'Desvincular cuenta de Google', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
   '/api/orders': 'Recarga enviada', '/api/topup-requests': 'Solicitud de saldo enviada', '/api/validate': 'ID verificado',
   '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/funds': 'Fondos consultados', '/api/admin/user-delete': 'Cuenta borrada',
   '/api/admin/user-update': 'Cuenta modificada', '/api/admin/family': 'Juego/región activado o quitado', '/api/admin/products': 'Paquete activado',
@@ -232,38 +232,96 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
 const GOOGLE_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
 const GOOGLE_TOKENINFO = process.env.GOOGLE_TOKENINFO_URL || 'https://oauth2.googleapis.com/tokeninfo';
 const googleHits = new Map();
-route('POST', '/api/google', null, async (req, res, _u, b) => {
-  if (!GOOGLE_ID) return send(res, 404, { error: 'El inicio con Google no está activado.' });
-  if (hitLimit(googleHits, A.clientIp(req), 30)) return send(res, 429, { error: 'Demasiados intentos. Intenta más tarde.' });
-  const cred = String(b.credential || '');
-  if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(cred) || cred.length > 4000) return send(res, 400, { error: 'Credencial inválida' });
+/** Valida el token de Google (audiencia, emisor, vencimiento, correo verificado). Devuelve los datos o { err: [status, mensaje] }. */
+async function googleVerify(cred) {
+  cred = String(cred || '');
+  if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(cred) || cred.length > 4000) return { err: [400, 'Credencial inválida'] };
   let t;
   try {
     const r = await fetch(GOOGLE_TOKENINFO + '?id_token=' + encodeURIComponent(cred), { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return send(res, 401, { error: 'Google no aceptó el inicio de sesión. Intenta otra vez.' });
+    if (!r.ok) return { err: [401, 'Google no aceptó el inicio de sesión. Intenta otra vez.'] };
     t = await r.json();
-  } catch { return send(res, 502, { error: 'No se pudo hablar con Google. Intenta otra vez.' }); }
+  } catch { return { err: [502, 'No se pudo hablar con Google. Intenta otra vez.'] }; }
   const email = String(t.email || '').trim().toLowerCase();
-  if (t.aud !== GOOGLE_ID || !['accounts.google.com', 'https://accounts.google.com'].includes(t.iss) || String(t.email_verified) !== 'true' || !(Number(t.exp) * 1000 > Date.now()) || !email || email.length > 120)
-    return send(res, 401, { error: 'Google no aceptó el inicio de sesión. Intenta otra vez.' });
+  if (t.aud !== GOOGLE_ID || !['accounts.google.com', 'https://accounts.google.com'].includes(t.iss) || String(t.email_verified) !== 'true' || !(Number(t.exp) * 1000 > Date.now()) || !email || email.length > 120 || !t.sub)
+    return { err: [401, 'Google no aceptó el inicio de sesión. Intenta otra vez.'] };
+  return { email, sub: String(t.sub) };
+}
+route('POST', '/api/google', null, async (req, res, _u, b) => {
+  if (!GOOGLE_ID) return send(res, 404, { error: 'El inicio con Google no está activado.' });
+  if (hitLimit(googleHits, A.clientIp(req), 30)) return send(res, 429, { error: 'Demasiados intentos. Intenta más tarde.' });
+  const g = await googleVerify(b.credential); if (g.err) return send(res, g.err[0], { error: g.err[1] });
+  const { email, sub } = g;
   const st = await getSettings();
-  let u = await C.users.findOne({ $or: [{ username_lc: email }, { email }] });
-  if (u && u.role !== 'reseller') return send(res, 403, { error: 'Las cuentas del equipo entran con usuario y contraseña.' });
+  let u = await C.users.findOne({ google_sub: sub });
+  if (!u) {
+    u = await C.users.findOne({ $or: [{ username_lc: email }, { email }] });
+    if (u && u.role !== 'reseller') return send(res, 403, { error: 'Tu cuenta del equipo no está vinculada a Google. Entra con usuario y contraseña y vincúlala en Seguridad.' });
+    if (u && u.google_sub && u.google_sub !== sub) return send(res, 403, { error: 'Esa cuenta está vinculada a otra cuenta de Google.' });
+  }
   if (!u) {
     if (st.registration === 'off') return send(res, 403, { error: 'No hay una cuenta con ese correo. Pide una al administrador.' });
     const open = st.registration === 'open';
     try {
-      await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(crypto.randomBytes(24).toString('hex')), role: 'reseller', google: 1,
+      await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, google_sub: sub, password_hash: A.hashPassword(crypto.randomBytes(24).toString('hex')), role: 'reseller', google: 1,
         balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, markup_manual: 0, trust_wallets: 0, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
     } catch (e) { if (!isDup(e)) throw e; }
     TG.notifyAdmins(`🆕 Nuevo revendedor (Google): ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
     u = await C.users.findOne({ username_lc: email });
   }
   if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
-  if (u.totp_on) return send(res, 403, { error: 'Tu cuenta tiene verificación en dos pasos: entra con tu contraseña y el código.' });
-  res.audit = { actor: u.username, role: u.role, label: 'Inicio de sesión con Google' };
+  const staff = u.role === 'admin' || u.role === 'subadmin';
+  if (u.totp_on) { // con verificación en dos pasos, Google NO la salta: también se pide el código
+    if (u.role === 'reseller') return send(res, 403, { error: 'Tu cuenta tiene verificación en dos pasos: entra con tu contraseña y el código.' });
+    const key = A.clientIp(req) + '|' + u.username.toLowerCase();
+    if (A.loginBlocked(key)) return send(res, 429, { error: 'Demasiados intentos. Espera 15 minutos.' });
+    const code = String(b.code || '').trim();
+    if (!code) return send(res, 200, { need_2fa: true });
+    if (!(await secondFactor(u, code))) { alertLoginFail(u, req, A.loginFail(key)); return send(res, 401, { error: 'Código incorrecto o vencido' }); }
+    A.loginOk(key);
+  }
+  if (!u.google_sub) await C.users.updateOne({ _id: u._id }, { $set: { google_sub: sub } });
+  res.audit = { actor: u.username, role: u.role, label: 'Inicio de sesión con Google' + (u.totp_on ? ' (con 2FA)' : '') };
+  if (staff && u.last_ip && u.last_ip !== A.clientIp(req)) TG.notifyAdmins(`🔐 ${u.username} entró con Google desde una IP nueva: ${A.clientIp(req)}`).catch(() => {});
   C.users.updateOne({ _id: u._id }, { $set: { last_login: now(), last_ip: A.clientIp(req), email: u.email || email } }).catch(() => {});
   send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id, u.sv || 0), 12 * 3600) });
+});
+// Vincular / desvincular una cuenta de Google desde el perfil (pide contraseña, y el código 2FA si lo tienes)
+route('GET', '/api/google-status', 'any', async (req, res, u) => {
+  const d = await C.users.findOne({ _id: u.id });
+  send(res, 200, { enabled: !!GOOGLE_ID, client_id: GOOGLE_ID || null, linked: !!(d && d.google_sub), email: d && d.google_email || null, needs_code: !!(d && d.totp_on) });
+});
+async function reauth(u, b) { // contraseña actual (+ código 2FA si lo tiene): evita que una sesión robada deje un acceso permanente
+  const d = await C.users.findOne({ _id: u.id });
+  if (!d || !A.verifyPassword(String(b.password || ''), d.password_hash)) return { err: 'La contraseña no es correcta.', d };
+  if (d.totp_on && !(await secondFactor(d, String(b.code || '').trim()))) return { err: 'Código de verificación incorrecto.', d };
+  return { d };
+}
+route('POST', '/api/google-link', 'any', async (req, res, u, b) => {
+  if (!GOOGLE_ID) return send(res, 404, { error: 'El inicio con Google no está activado.' });
+  const key = A.clientIp(req) + '|link|' + u.id; if (A.loginBlocked(key)) return send(res, 429, { error: 'Demasiados intentos. Espera 15 minutos.' });
+  const ra = await reauth(u, b); if (ra.err) { A.loginFail(key); return send(res, 401, { error: ra.err }); }
+  const g = await googleVerify(b.credential); if (g.err) return send(res, g.err[0], { error: g.err[1] });
+  const other = await C.users.findOne({ google_sub: g.sub });
+  if (other && other._id !== u.id) {
+    // Si esa Google solo había creado una cuenta de revendedor vacía y sin aprobar (por intentar entrar antes de vincular), se libera
+    const empty = other.google === 1 && other.role === 'reseller' && !other.active && !(other.balance_cents || 0) && !(other.bal_transfer_cents || 0) && !(other.bal_mobile_cents || 0) && !(await C.orders.findOne({ user_id: other._id }));
+    if (!empty) return send(res, 409, { error: 'Esa cuenta de Google ya está vinculada a otra cuenta del panel.' });
+    await C.users.deleteOne({ _id: other._id });
+  }
+  A.loginOk(key);
+  await C.users.updateOne({ _id: u.id }, { $set: { google_sub: g.sub, google_email: g.email } });
+  res.audit = { actor: u.username, role: u.role, label: 'Cuenta de Google vinculada' };
+  TG.notifyUser(u.id, `🔗 Se vinculó la cuenta de Google ${g.email} a tu cuenta del panel. Si no fuiste tú, cambia tu contraseña y desvincúlala.`).catch(() => {});
+  send(res, 200, { ok: true, email: g.email });
+});
+route('POST', '/api/google-unlink', 'any', async (req, res, u, b) => {
+  const key = A.clientIp(req) + '|link|' + u.id; if (A.loginBlocked(key)) return send(res, 429, { error: 'Demasiados intentos. Espera 15 minutos.' });
+  const ra = await reauth(u, b); if (ra.err) { A.loginFail(key); return send(res, 401, { error: ra.err }); }
+  A.loginOk(key);
+  await C.users.updateOne({ _id: u.id }, { $set: { google_sub: null, google_email: null } });
+  res.audit = { actor: u.username, role: u.role, label: 'Cuenta de Google desvinculada' };
+  send(res, 200, { ok: true });
 });
 route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) }));
 
@@ -1121,6 +1179,28 @@ const trOut = (r, admin) => ({ id: r._id, method: r.method || 'usdt', currency: 
   pay_amount: r.expect_e4 && r.status === 'pending' ? (r.expect_e4 / 1e4).toFixed(2) : null, expires_at: r.expect_e4 && r.status === 'pending' && r.expires_at ? fmt(r.expires_at) : null,
   tx_hash: r.tx_hash || null, verify: r.verify || 'manual', verify_msg: r.verify_msg || null,
   chain_amount: r.chain ? r.chain.cents / 100 : null, chain_from: admin && r.chain ? r.chain.from : undefined });
+/** Auditoría: compara la fecha REAL de cada pago USDT abonado con la fecha de la solicitud. Un pago mucho más viejo que su solicitud
+ *  es casi seguro un hash viejo reclamado por otra persona. Solo el dueño. */
+route('GET', '/api/admin/audit-deposits', 'admin', async (req, res) => {
+  if (!BSC.enabled()) return send(res, 400, { error: 'Falta configurar USDT_WALLET y BSC_RPC_URL para consultar la blockchain.' });
+  const rs = (await C.topup_requests.find({ method: 'usdt', status: 'approved', tx_hash: { $exists: true } }).sort({ _id: -1 }).limit(300).toArray()).filter(r => r.tx_hash);
+  const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x])), bt = new Map(), out = [];
+  const timeOf = async r => {
+    if (r.chain && r.chain.block) { if (!bt.has(r.chain.block)) bt.set(r.chain.block, BSC.blockTime(r.chain.block).catch(() => null)); return bt.get(r.chain.block); }
+    const t = await BSC.txTime(r.tx_hash).catch(() => null); return t ? t.at : null;
+  };
+  for (let i = 0; i < rs.length; i += 6) await Promise.all(rs.slice(i, i + 6).map(async r => {
+    const at = await timeOf(r), made = r.created_at ? new Date(r.created_at).getTime() : null;
+    const ageH = at && made ? (made - at) / 3600e3 : null, u = us.get(r.user_id);
+    out.push({ id: r._id, user: u ? u.username : '?', user_created: u && u.created_at ? fmt(u.created_at) : null, usdt: (r.approved_cents || 0) / 100, tx: r.tx_hash, from: r.chain ? r.chain.from : null,
+      tx_at: at ? fmt(new Date(at)) : null, requested_at: fmt(r.created_at), age_h: ageH == null ? null : Math.round(ageH * 10) / 10, auto: /autom/i.test(r.admin_note || ''),
+      level: ageH == null ? 'unknown' : ageH > 24 ? 'high' : ageH > 2 ? 'medium' : 'ok' });
+  }));
+  out.sort((a, b) => b.id - a.id);
+  const sus = out.filter(x => x.level === 'high' || x.level === 'medium'), per = new Map();
+  for (const x of sus) { const v = per.get(x.user) || { user: x.user, count: 0, usdt: 0 }; v.count++; v.usdt += x.usdt; per.set(x.user, v); }
+  send(res, 200, { checked: out.length, suspicious: sus.length, usdt: sus.reduce((a, x) => a + x.usdt, 0), per_user: [...per.values()].sort((a, b) => b.usdt - a.usdt), items: out.filter(x => x.level !== 'ok').slice(0, 120) });
+});
 route('GET', '/api/admin/usdt-unmatched', 'staff', async (req, res) => {
   const r = await kvGet('usdt_unmatched'); let l = []; try { l = r && r.value ? JSON.parse(r.value) : []; } catch {}
   send(res, 200, l);

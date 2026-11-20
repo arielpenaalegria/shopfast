@@ -74,4 +74,12 @@ async function transfersTo(fromBlock, toBlock) {
     tx: String(l.transactionHash).toLowerCase(), from: '0x' + l.topics[1].slice(26).toLowerCase(), cents: Number(BigInt(l.data) / 10n ** 16n), e4: Number(BigInt(l.data) / 10n ** 14n), block: parseInt(l.blockNumber, 16) }));
 }
 
-module.exports = { enabled, check, isHash, blockNumber, transfersTo, wallet: () => (walletOk ? WALLET : null), minConf: MIN_CONF, walletOk: () => walletOk };
+/** Fecha real (ms) en que se minó el bloque. */
+async function blockTime(n) { const b = await rpc('eth_getBlockByNumber', ['0x' + Number(n).toString(16), false]); return b && b.timestamp ? parseInt(b.timestamp, 16) * 1000 : null; }
+/** Fecha real (ms) de una transacción y su bloque, a partir del hash. */
+async function txTime(hash) {
+  const rc = await rpc('eth_getTransactionReceipt', [hash]); if (!rc) return null;
+  const block = parseInt(rc.blockNumber, 16); return { block, at: await blockTime(block) };
+}
+
+module.exports = { enabled, check, blockTime, txTime, isHash, blockNumber, transfersTo, wallet: () => (walletOk ? WALLET : null), minConf: MIN_CONF, walletOk: () => walletOk };
