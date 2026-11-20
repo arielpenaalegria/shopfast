@@ -811,6 +811,16 @@ function decorate(root) {
     h.prepend(el('span', { class: 'h2i' }, m[1]));
   });
 }
+const hue = x => { let h = 0; for (const c of String(x)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const avatar2 = (name, big) => el('div', { class: 'av2' + (big ? ' big' : ''), style: `--h:${hue(name)}` }, String(name).trim().charAt(0).toUpperCase() || '?');
+const GAMEIC = [['free fire', '🔥'], ['mobile legends', '⚔️'], ['blood', '🩸'], ['call of duty', '🎯'], ['pubg', '🪖'], ['roblox', '🧱'], ['genshin', '✨'], ['clash', '🏰'], ['brawl', '💥'], ['fortnite', '🛡️'], ['honor', '👑'], ['netflix', '🎬'], ['spotify', '🎵']];
+/** Icono de juego (no hay imágenes en el catálogo): color propio por juego + emoji. */
+const gameBadge = (name, cls = '') => { const n = String(name).toLowerCase(), g = GAMEIC.find(([k]) => n.includes(k)); return el('div', { class: 'gb ' + cls, style: `--h:${hue(String(name).split(/[-–·]/)[0].trim())}` }, g ? g[1] : '💎'); };
+const infoBar = (...kids) => el('div', { class: 'infobar' }, el('span', { class: 'ib' }, '!'), el('div', { class: 'ibt' }, ...kids), el('span', { class: 'brandchip' }, el('img', { src: 'logo.jpg', alt: '' }), el('b', {}, 'SHOP FAST')));
+const infoY = (...kids) => el('div', { class: 'infoy' }, el('span', { class: 'ib' }, 'i'), el('div', { class: 'ibt' }, ...kids));
+const CURIC = { usdt: () => el('i', { class: 'tcoin' }, '₮'), transfer: () => el('i', { class: 'ic' }, '🏛️'), mobile: () => el('i', { class: 'ic' }, '📱') };
+const CURN = { usdt: 'USDT', transfer: 'CUP transf.', mobile: 'CUP SM' };
+const fmtC = (v, c) => c === 'usdt' ? Number(v || 0).toFixed(2) : Math.round(v || 0).toLocaleString('es');
 let tab = 'resumen', catQuery = '', period = 'day', navOpen = null;
 async function adminView() {
   clearTimeout(timer);
@@ -1216,14 +1226,14 @@ async function adminView() {
     q.addEventListener('keydown', e => { if (e.key === 'Enter') { catQuery = q.value; adminView(); } });
     const fams = groupBy(cat, c => c.family);
     put(out, card('Catálogo de Central One',
-      el('div', { class: 'row' }, q, el('button', { class: 'sec', onclick: () => { catQuery = q.value; adminView(); } }, 'Buscar'),
-        el('button', { class: 'sec', onclick: async () => { try { const r = await api('POST', '/api/admin/catalog-sync', {}); msg(note, `Catálogo actualizado: ${r.count} productos.`, 'ok'); setTimeout(adminView, 800); } catch (e) { msg(note, e.message, 'err'); } } }, 'Actualizar')),
+      el('div', { class: 'row catsearch' }, q, el('button', { onclick: () => { catQuery = q.value; adminView(); } }, '🔍 Buscar'),
+        el('button', { class: 'sec wide', onclick: async () => { try { const r = await api('POST', '/api/admin/catalog-sync', {}); msg(note, `Catálogo actualizado: ${r.count} productos.`, 'ok'); setTimeout(adminView, 800); } catch (e) { msg(note, e.message, 'err'); } } }, '🔄 Actualizar catálogo')),
       el('div', { class: 'mut' }, `${cat.length} productos en ${fams.size} juegos. "Por ID" se puede vender; "Código" (gift card/PIN) todavía no.`), note,
       el('div', { style: 'margin-top:10px' }, ...[...fams].map(([f, items]) => {
         const byIdItems = items.filter(i => i.requires_target), on = byIdItems.filter(i => i.enabled).length;
         return el('details', { class: 'fam', open: catQuery ? '' : null },
-          el('summary', {}, el('span', {}, f, el('div', { class: 'mut', style: 'font-weight:400' }, `${byIdItems.length} por ID · ${items.length - byIdItems.length} con código · vendes ${on}`)),
-            on ? el('span', { class: 'tag id' }, 'Activo') : null),
+          el('summary', {}, gameBadge(f, 'sm'), el('span', { class: 'fn' }, f, el('div', { class: 'mut', style: 'font-weight:400' }, `${byIdItems.length} por ID · ${items.length - byIdItems.length} con código`)),
+            on ? el('span', { class: 'tag id' }, 'Activos: ' + on) : null, el('span', { class: 'chev' }, '›')),
           el('div', { class: 'body' },
             byIdItems.length ? el('div', { class: 'acts' }, on < byIdItems.length ? act(`Vender todos por ID (${byIdItems.length})`, () => api('POST', '/api/admin/family', { family: f, active: true }), '') : null,
               on ? act('Dejar de vender todo', () => api('POST', '/api/admin/family', { family: f, active: false }), 'red') : null) : null,
@@ -1234,20 +1244,24 @@ async function adminView() {
                   el('span', { class: 'mut' }, `${vi.length} opciones · ${vId.length} por ID · vendes ${vOn}`)), vOn ? el('span', { class: 'tag id' }, 'Activo') : el('span', { class: 'chev' }, '›')),
                 vId.length ? el('div', { class: 'acts' }, vOn < vId.length ? act(`Vender toda la región (${vId.length})`, () => api('POST', '/api/admin/family', { family: f, variant: v, active: true }), '') : null,
                   vOn ? act('Quitar región', () => api('POST', '/api/admin/family', { family: f, variant: v, active: false }), 'red') : null) : null,
-                el('div', { class: 'list' }, ...vi.map(c => el('div', {},
-                  el('div', { class: 'l' }, el('div', {}, shortName(c.name)), el('div', { class: 'mut' }, (c.price === null ? '' : 'Costo US$ ' + c.price) + (c.fields ? ' · pide: ' + c.fields : '') + (c.in_stock ? '' : ' · agotado'))),
+                el('div', { class: 'list plist' }, ...vi.map(c => el('div', {},
+                  el('span', { class: 'dm' }, '💎'),
+                  el('div', { class: 'l' }, el('div', {}, shortName(c.name)), el('div', { class: c.in_stock ? 'okt' : 'badt' }, c.in_stock ? '✔ Disponible' : '✖ Agotado'), c.fields ? el('div', { class: 'mut' }, 'pide: ' + c.fields) : null),
+                  c.price === null ? null : el('b', { class: 'pr' }, Number(c.price).toFixed(2) + ' USDT'),
                   el('div', { class: 'r' }, !c.requires_target ? el('span', { class: 'tag code' }, 'Código')
                     : c.enabled ? act('Quitar', () => api('POST', '/api/admin/product-update', { id: c.local_id, active: false }), 'red')
-                      : act('Vender', () => api('POST', '/api/admin/products', { product_id: c.product_id }), ''))))));
+                      : act('🛒 Vender', () => api('POST', '/api/admin/products', { product_id: c.product_id }), ''))))));
             })));
       })),
       cat.length ? null : el('div', { class: 'mut' }, 'No hay productos. Pulsa "Actualizar" o revisa que tu llave tenga el permiso catalog:read.')));
     const mine = groupBy(prods.filter(p => p.active), p => p.family + ' · ' + regLabel(p.variant));
     put(out, card('Lo que ven tus revendedores', mine.size ? el('div', {}, ...[...mine].map(([f, ps]) => el('div', {}, el('h3', {}, f),
-      el('div', { class: 'list' }, ...ps.map(p => el('div', {},
-        el('div', { class: 'l' }, el('div', {}, p.name), el('div', { class: 'mut' }, p.cost === null ? 'fuera del catálogo' : 'Costo US$ ' + p.cost + (p.in_stock ? '' : ' · agotado'))),
+      el('div', { class: 'list pcards' }, ...ps.map(p => el('div', {},
+        gameBadge(f, 'sm'),
+        el('div', { class: 'l' }, el('div', {}, p.name), el('b', { class: 'pr' }, p.cost === null ? 'fuera del catálogo' : Number(p.cost).toFixed(2) + ' USDT'), el('div', { class: p.in_stock ? 'okt' : 'badt' }, p.cost === null ? '' : p.in_stock ? '✔ Disponible' : '✖ Agotado')),
         el('div', { class: 'r' }, act('Tipo: ' + PTYPES.find(([k]) => k === typeOf(p))[1], async () => { const a = prompt('Tipo de oferta: diamantes, pases, membresias u otros.\nDéjalo vacío para que se detecte solo por el nombre:', p.ptype || ''); if (a === null) throw new Error('Cancelado'); await api('POST', '/api/admin/product-update', { id: p.id, ptype: a.trim().toLowerCase() }); }), act('Renombrar', async () => { const a = prompt('Nombre que verán tus revendedores:', p.name); if (a) await api('POST', '/api/admin/product-update', { id: p.id, name: a }); }))))))))
-      : el('div', { class: 'mut' }, 'Todavía no vendes nada. Abre un juego arriba y pulsa "Vender todos por ID".')));
+      : el('div', { class: 'mut' }, 'Todavía no vendes nada. Abre un juego arriba y pulsa "Vender todos por ID".')),
+      infoY(el('b', {}, 'Solo se pueden vender productos por ID.'), ' Los productos de tarjetas de regalo (PIN) aún no están disponibles.'));
   }
 
   if (tab === 'revendedores') {
@@ -1264,21 +1278,21 @@ async function adminView() {
     const hasBal = u => CURS.some(c => (balOf(u)[c] || 0) > 0);
     const matchU = r => !userQuery.trim() || String(r.username).toLowerCase().includes(userQuery.trim().toLowerCase());
     const FILT = { all: () => true, bal: hasBal, nobal: u => !hasBal(u), off: u => !u.active };
-    const FL = [['all', 'Todos'], ['bal', 'Con saldo'], ['nobal', 'Sin saldo'], ['off', 'Desactivados']];
+    const FL = [['all', '👥 Todos'], ['bal', '✅ Con saldo'], ['nobal', '❌ Sin saldo'], ['off', '🚫 Desactivados']];
     /** Una tarjeta por revendedor: quién es, cuánto tiene en cada saldo y las acciones, sin amontonar botones. */
     const rbox = r => {
       const b = balOf(r);
       return el('div', { class: 'rbox' + (r.active ? '' : ' off') },
-        el('div', { class: 'rhead' }, el('div', { class: 'av' }, String(r.username).trim().charAt(0) || '?'),
-          el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username),
-            el('div', { class: 'tags' }, r.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
+        el('div', { class: 'rhead' }, avatar2(r.username, true),
+          el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username), el('div', { class: 'stt ' + (r.active ? 'on' : 'off') }, r.active ? 'Activo' : 'Desactivado'),
+            el('div', { class: 'tags' },
               OWN ? el('span', { class: 'tag ' + (r.markup_manual ? 'manual' : 'auto') }, `Margen ${r.markup_pct}% · ${r.markup_manual ? '🔒 manual' : 'general'}`) : null,
               null))),
-        el('div', { class: 'tiles' }, ...CURS.map(c => el('div', { class: 'tile' + ((b[c] || 0) > 0 ? '' : ' zero') }, el('span', {}, CUR_ICON[c] + ' ' + CUR_S[c]),
-          el('b', {}, c === 'usdt' ? Number(b[c] || 0).toFixed(2) : Math.round(b[c] || 0).toLocaleString('es'))))),
+        el('div', { class: 'tiles tiles2' }, ...CURS.map(c => el('div', { class: 'tile' + ((b[c] || 0) > 0 ? '' : ' zero') }, el('span', {}, CURIC[c](), CURN[c]),
+          el('b', {}, fmtC(b[c], c))))),
         el('div', { class: 'acts', style: 'margin-top:0' },
           can('ajustar') ? act('± Agregar / quitar saldo', () => adjust(r), '') : null,
-          act(r.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'red' : 'sec')),
+          act(r.active ? '🚫 Desactivar' : '✔ Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'sec' : 'grn')),
         OWN ? el('details', { class: 'regd', style: 'margin:10px 0 0' }, el('summary', {}, el('b', {}, 'Más opciones'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
           el('div', { class: 'acts', style: 'margin:0 0 10px' },
             act('Cambiar margen', async () => { const a = prompt(`Margen % para ${r.username}.\nQuedará como MANUAL 🔒: el cambio general ya no lo toca.`, r.markup_pct); if (a !== null && a.trim() !== '') await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
@@ -1301,34 +1315,41 @@ async function adminView() {
     sq.addEventListener('input', () => { userQuery = sq.value; renderUsers(); });
     const searchBar = el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq,
       el('button', { type: 'button', class: 'ghost clr', title: 'Borrar', onclick: () => { sq.value = ''; userQuery = ''; renderUsers(); sq.focus(); } }, '✕'));
-    put(out, el('details', { class: 'card newrev', open: users.length ? null : '' }, el('summary', {}, el('h2', { style: 'margin:0' }, '＋ Nuevo revendedor'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
+    put(out, el('details', { class: 'card newrev', open: users.length ? null : '' }, el('summary', {}, el('h2', { style: 'margin:0' }, '➕ Nuevo revendedor'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
       el('div', { style: 'margin-top:12px' }, el('div', { class: 'row' }, nu.u, nu.p),
         OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, `Margen % (general: ${defM}%)`, nu.m)) : null,
         null,
         el('div', { class: 'acts' }, create),
         el('div', { class: 'mut', style: 'margin-top:8px' }, OWN ? `Precio para él = costo de Central One + su margen %. Si dejas el margen general (${defM}%), la cuenta sigue los cambios generales; si pones otro, queda como manual 🔒.` : 'La cuenta se crea con el margen general que puso el dueño.'), note)),
-      searchBar, usersBox);
+      searchBar, usersBox, infoBar('Puedes crear revendedores con diferentes márgenes y gestionar sus saldos de forma rápida y segura.'));
     renderUsers();
   }
 
   if (tab === 'pedidos') {
-    const box = el('div'), cnt = el('div', { class: 'mut', style: 'margin:6px 0' });
-    const row = o => el('div', { style: 'display:block' },
-      el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-        el('div', { class: 'l' }, el('div', {}, o.product_name), el('div', { class: 'mut' }, `#${o.id} · ${o.username} · ${o.target}`), el('div', { class: 'mut' }, o.created_at + (o.reference_code ? ' · Ref ' + o.reference_code : ''))),
-        el('div', { class: 'r' }, el('div', {}, money(o.paid ?? o.price, o.currency)), OWN ? el('div', { class: 'mut' }, 'gana ' + Number(o.margin).toFixed(2) + ' USDT') : null, tag(o.status))),
-      o.detail ? el('div', { class: 'mut', style: 'margin-top:4px' }, o.detail) : null,
-      o.status === 'unknown' ? el('div', { class: 'acts' },
-        act('Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
-        act('Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), ''),
-        act('No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null);
+    const box = el('div'), cnt = el('div', { class: 'mut', style: 'margin:6px 0' }), foot = el('div', { class: 'ofoot' });
+    const row = o => el('div', { class: 'ocard ' + o.status },
+      el('div', { class: 'otop' }, gameBadge(o.product_name),
+        el('div', { class: 'oinfo' }, el('div', { class: 'on' }, o.product_name), el('div', { class: 'op' }, 'Pedido: ', el('b', {}, '#' + o.id)),
+          el('div', {}, '👤 Revendedor: ' + o.username), el('div', {}, '🎮 ID: ' + o.target), el('div', {}, '📅 ' + o.created_at)),
+        el('div', { class: 'ost' }, tag(o.status))),
+      el('div', { class: 'omid' },
+        el('div', { class: 'ocell' }, el('span', { class: 'mut' }, 'Referencia:'), o.reference_code ? el('code', { class: 'ref' }, o.reference_code) : el('span', { class: 'mut' }, '—')),
+        el('div', { class: 'ocell' }, el('span', { class: 'mut' }, 'Pagado:'), el('b', { class: 'paid' }, ((o.currency || 'usdt') === 'usdt' ? '₮ ' : '') + money(o.paid ?? o.price, o.currency))),
+        OWN ? el('div', { class: 'gana' }, el('span', {}, '👑 Gana'), el('b', {}, Number(o.margin).toFixed(2) + ' USDT')) : null),
+      o.detail ? el('div', { class: 'mut', style: 'margin-top:8px' }, o.detail) : null,
+      o.status === 'unknown' ? el('div', { class: 'acts oacts' },
+        act('🔄 Reintentar (seguro)', () => api('POST', '/api/admin/retry', { order_id: o.id })),
+        act('✔ Sí llegó', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'completed' }), 'grn'),
+        act('✖ No llegó (reembolsar)', () => api('POST', '/api/admin/resolve', { order_id: o.id, outcome: 'failed' }), 'red')) : null);
     const draw = list => {
       cnt.textContent = `${list.length} pedido${list.length === 1 ? '' : 's'}` + (list.length >= 300 ? ' (los 300 más recientes: afina el filtro para ver otros)' : '');
-      box.replaceChildren(list.length ? el('div', { class: 'list' }, ...list.map(row)) : el('div', { class: 'mut' }, hasF(ordF) ? 'Ningún pedido coincide con ese filtro.' : 'Sin pedidos todavía.'));
+      box.replaceChildren(list.length ? el('div', { class: 'ocards' }, ...list.map(row)) : el('div', { class: 'mut' }, hasF(ordF) ? 'Ningún pedido coincide con ese filtro.' : 'Sin pedidos todavía.'));
+      const gain = list.filter(o => o.status === 'completed').reduce((a, o) => a + Number(o.margin || 0), 0);
+      foot.replaceChildren(el('span', {}, '📊 Total de pedidos: ', el('b', {}, String(list.length))), OWN ? el('span', {}, '👑 Ganancias: ', el('b', { class: 'gn' }, gain.toFixed(2) + ' USDT')) : null);
     };
     const reload = async () => { box.replaceChildren(el('div', { class: 'mut' }, 'Buscando…')); try { draw(await api('GET', '/api/admin/orders?' + qs({ ...ordF, limit: 300 }))); } catch (e) { msg(box, e.message, 'err'); } };
-    put(out, card('Pedidos', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Los "Verificando" necesitan tu revisión: compruébalos en el portal de Central One con la referencia.'),
-      filterBar(ordF, [['', 'Todos'], ['unknown', 'Para revisar'], ['active', 'En proceso'], ['completed', 'Completados'], ['failed', 'Fallidos']], reload), cnt, box));
+    put(out, infoY('Los pedidos ', el('b', {}, 'Verificando'), ' necesitan revisión en Central One con la referencia.'),
+      card('', filterBar(ordF, [['', '▦ Todos'], ['unknown', '🕑 Para revisar'], ['active', '⏳ En proceso'], ['completed', '✅ Completados'], ['failed', '❌ Fallidos']], reload), cnt, box), foot);
     if (hasF(ordF)) reload(); else draw(orders);
   }
 
@@ -1347,32 +1368,37 @@ async function adminView() {
       sortBox.replaceChildren(...SORTS.map(([k, l]) => el('button', { type: 'button', class: 'chip' + (fundSort === k ? ' on' : ''), onclick: () => { fundSort = k; drawRows(); } }, l)),
         el('button', { type: 'button', class: 'chip' + (fundOnly ? ' on' : ''), onclick: () => { fundOnly = !fundOnly; drawRows(); } }, 'Solo con saldo'));
       rowsBox.replaceChildren(el('div', { class: 'mut', style: 'margin-bottom:8px' }, `${list.length} de ${f.resellers.length} revendedores`),
-        list.length ? el('div', { class: 'rgrid' }, ...list.map(r => el('div', { class: 'rbox' + (r.active ? '' : ' off') },
-          el('div', { class: 'rhead' }, el('div', { class: 'av' }, String(r.username).trim().charAt(0) || '?'),
-            el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username), r.pending || !r.active ? el('div', { class: 'tags' }, el('span', { class: 'tag off' }, r.pending ? 'Pendiente' : 'Desactivado')) : null),
-            can('ajustar') ? act('± Saldo', () => adjust(r), 'sec') : null),
-          el('div', { class: 'tiles', style: 'margin-bottom:0' }, ...CURS.map(c => el('div', { class: 'tile' + (r.balances[c] > 0 ? '' : ' zero') }, el('span', {}, CUR_ICON[c] + ' ' + CUR_S[c]),
-            el('b', {}, c === 'usdt' ? Number(r.balances[c]).toFixed(2) : Math.round(r.balances[c]).toLocaleString('es'))))))))
+        list.length ? el('div', { class: 'frows' }, ...list.map(r => el('div', { class: 'frow' + (r.active ? '' : ' off') },
+          el('div', { class: 'fwho' }, avatar2(r.username), el('div', { style: 'min-width:0' }, el('div', { class: 'rname' }, r.username), el('div', { class: 'stt ' + (r.pending ? 'pend' : r.active ? 'on' : 'off') }, r.pending ? 'Pendiente' : r.active ? 'Activo' : 'Desactivado'))),
+          can('ajustar') ? act('± Saldo', () => adjust(r), '') : null,
+          el('div', { class: 'fbal' }, ...CURS.map(c => el('div', { class: r.balances[c] > 0 ? '' : 'zero' }, el('span', {}, CURIC[c](), CURN[c]), el('b', {}, fmtC(r.balances[c], c))))))))
           : el('div', { class: 'mut' }, 'Ningún revendedor coincide.'));
     };
     const sq = el('input', { type: 'search', placeholder: 'Buscar revendedor…', autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
     sq.addEventListener('input', () => { fq = sq.value; drawRows(); });
     const P = f.provider, vend = f.totals.usdt;
     put(out,
-      card('Saldo en Central One', P ? el('div', {}, el('div', { style: 'font-size:1.9rem;font-weight:800' }, usdt(P.available)),
-          el('div', { class: 'mut' }, (P.held != null ? 'Retenido en pedidos en curso: ' + usdt(P.held) + ' · ' : '') + (P.live ? 'en vivo' : 'último dato conocido' + (P.at ? ' (' + P.at + ' UTC)' : ''))))
-        : el('div', { class: 'mut' }, f.provider_error || 'Todavía no hay dato del saldo de Central One.'),
-        P && Number(P.available) < vend ? el('div', { class: 'msg err', style: 'margin-top:10px' }, 'Tus revendedores tienen más USDT que lo que hay en Central One: si todos compraran a la vez, no alcanzaría.') : null),
-      card('Lo que tienen tus revendedores', el('div', { class: 'stats' }, ...CURS.map(c => el('div', { class: 'stat' }, el('span', { class: 'mut' }, CUR_ICON[c] + ' ' + CUR_LONG[c]), el('b', {}, money(f.totals[c], c)), el('span', { class: 'mut' }, `${f.with_balance[c]} de ${f.count} con saldo`)))),
+      P ? el('div', { class: 'card fhero' }, el('div', { class: 'bigcoin' }, '₮'),
+          el('div', { class: 'fh' }, el('div', { class: 'fhl' }, 'Saldo en Central One'), el('div', { class: 'fhv' }, usd(P.available)),
+            P.held != null ? el('span', { class: 'fhp' }, '✓ En pedidos: ' + usd(P.held)) : null,
+            el('div', { class: 'mut', style: 'margin-top:6px;font-size:.78rem' }, P.live ? 'en vivo' : 'último dato conocido' + (P.at ? ' (' + P.at + ' UTC)' : ''))), icon('wallet', 'fw'))
+        : card('Saldo en Central One', el('div', { class: 'mut' }, f.provider_error || 'Todavía no hay dato del saldo de Central One.')),
+      P && Number(P.available) < vend ? el('div', { class: 'msg err' }, 'Tus revendedores tienen más USDT que lo que hay en Central One: si todos compraran a la vez, no alcanzaría.') : null,
+      card('Lo que tienen tus revendedores', el('div', { class: 'stats stats3' }, ...CURS.map(c => el('div', { class: 'stat sc' }, el('span', { class: 'mut' }, CURIC[c](), ({ usdt: 'USDT', transfer: 'CUP transf.', mobile: 'CUP saldo' })[c]), el('b', {}, fmtC(f.totals[c], c) + (c === 'usdt' ? '' : ' CUP')), el('span', { class: 'mut' }, `(${f.with_balance[c]} de ${f.count} con saldo)`)))),
         P ? el('div', { class: 'mut', style: 'margin-top:10px' }, `USDT de revendedores: ${usdt(vend)} · en Central One: ${usdt(P.available)}.`) : null),
-      card('Saldo por revendedor', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'El USDT, la transferencia CUP y el saldo móvil CUP de cada revendedor, cada uno por separado.'), el('div', { class: 'search', style: 'margin-bottom:0' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq), sortBox, rowsBox),
-      OWN ? card('Límites de tus sub-administradores', staff.length ? el('div', { class: 'list' }, ...staff.map(m => el('div', { style: 'display:block' },
-        el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
-          el('div', { class: 'mut' }, 'Aprobar saldo: ' + (m.perms.saldo ? `hasta ${limLine(m.perms, 'max_')} por aprobación` : 'sin permiso')),
-          el('div', { class: 'mut' }, 'Ajustar saldo a mano: ' + (m.perms.ajustar ? `hasta ${limLine(m.perms, 'max_adj_')} por ajuste` : 'sin permiso')),
-          m.perms.ajustar ? quotaBlock(m.quota) : null,
-          el('div', { class: 'mut' }, 'Ver fondos: ' + (m.perms.saldos ? 'sí' : 'no') + ' · Pedidos: ' + (m.perms.pedidos ? 'sí' : 'no') + ' · Revendedores: ' + (m.perms.revendedores ? 'sí' : 'no') + ' · 2FA: ' + (m.totp ? 'activa' : 'no'))))))
-        : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.'), el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { tab = 'equipo'; adminView(); } }, 'Cambiar límites en Equipo'))) : null);
+      el('div', { class: 'card' }, el('div', { class: 'cardh' }, el('h2', {}, '👤➕ Saldo por revendedor'), el('button', { class: 'sec sm', onclick: () => adminView() }, '🔄 Actualizar')),
+        el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), sq), sortBox, rowsBox),
+      OWN ? card('Límites de tus sub-administradores', staff.length ? el('div', {}, ...staff.map(m => el('div', { class: 'lim' },
+        el('div', { class: 'limh' }, avatar2(m.username), el('b', {}, m.username), m.active ? null : el('span', { class: 'tag off' }, 'Desactivado')),
+        el('div', { class: 'lim3' },
+          el('div', {}, el('span', {}, '✅ Límite de aprobaciones'), el('b', {}, m.perms.saldo ? 'Hasta ' + limLine(m.perms, 'max_') : 'Sin permiso')),
+          el('div', {}, el('span', {}, '⚙️ Ajustes manuales'), el('b', {}, m.perms.ajustar ? 'Hasta ' + limLine(m.perms, 'max_adj_') : 'Sin permiso')),
+          el('div', {}, el('span', {}, '🔐 Verificación 2FA'), el('b', {}, m.totp ? 'Activa' : 'No activa'))),
+        m.perms.ajustar ? quotaBlock(m.quota) : null,
+        el('div', { class: 'mut limp' }, '🔒 Permisos: ' + ([m.perms.saldo && 'aprobar pagos', m.perms.ajustar && 'ajustar saldos', m.perms.saldos && 'ver fondos', m.perms.pedidos && 'pedidos', m.perms.revendedores && 'revendedores'].filter(Boolean).join(', ') || 'ninguno'))))
+        , el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { tab = 'equipo'; adminView(); } }, 'Cambiar límites en Equipo')))
+        : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.')) : null,
+      infoBar('Mantén tus saldos actualizados y controla el estado de tus revendedores.'));
     drawRows();
   }
 
@@ -1408,7 +1434,8 @@ async function adminView() {
       sect('Control de saldo manual'),
       card('Lo que mueve tu equipo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Cada vez que un sub-administrador agrega o quita saldo a mano se descuenta de su cupo y lo ves aquí, con el desglose por revendedor desde el último restablecimiento. Cuando llega a 0 no puede mover más hasta que tú restablezcas el cupo.'),
         team.staff.filter(m => m.perms.ajustar).length ? el('div', { class: 'list' }, ...team.staff.filter(m => m.perms.ajustar).map(m => el('div', { style: 'display:block' },
-          el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px' }, el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado')), act('Restablecer cupo', () => resetQuota(m), '')),
+          el('div', { class: 'limh' }, avatar2(m.username, true), el('div', { style: 'flex:1;min-width:0' }, el('b', {}, m.username), el('div', { class: 'stt ' + (m.active ? 'on' : 'off') }, m.active ? 'Activo' : 'Desactivado')), act('🔄 Restablecer cupo', () => resetQuota(m), 'sec')),
+          el('div', { class: 'tiles tiles2' }, ...CURS.map(c => el('div', { class: 'tile' }, el('span', {}, CURIC[c](), CURN[c]), el('b', {}, fmtC(m.quota[c].left, c)), el('span', { class: 'mut' }, 'quedan')))),
           quotaBlock(m.quota),
           el('details', { class: 'regd', style: 'margin-top:10px' }, el('summary', {}, el('b', {}, `Desglose por revendedor (${m.resellers.length})`), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
             el('div', { class: 'mut', style: 'margin-bottom:6px' }, `Desde ${m.since} UTC · formato: +agregó / −quitó`),
@@ -1417,15 +1444,20 @@ async function adminView() {
               : el('div', { class: 'mut', style: 'padding-bottom:10px' }, 'No ha movido saldo a mano desde el último restablecimiento.'),
             (m.approved.usdt || m.approved.transfer || m.approved.mobile) ? el('div', { class: 'mut', style: 'margin:8px 0 10px' }, `Además aprobó solicitudes de saldo por: ${[flow({ add: m.approved.usdt, rem: 0 }, 'usdt'), flow({ add: m.approved.transfer, rem: 0 }, 'transfer'), flow({ add: m.approved.mobile, rem: 0 }, 'mobile')].filter(Boolean).map(s => s.replace(' / −0.00', '').replace(' / −0', '')).join('  ·  ')} (esto no gasta el cupo).`) : null))))
           : el('div', { class: 'mut' }, 'Ningún sub-administrador tiene el permiso "Ajustar saldo a mano". Actívalo abajo en su ficha.')),
-      card('Últimos movimientos del equipo', team.recent.length ? el('div', { class: 'list' }, ...team.recent.slice(0, 20).map(r => el('div', { style: 'display:block' },
-        el('div', { style: 'display:flex;justify-content:space-between;gap:8px' },
-          el('div', { class: 'l' }, el('div', {}, el('b', {}, r.by), r.kind === 'approval' ? ' aprobó saldo a ' : (r.amount >= 0 ? ' agregó a ' : ' quitó de '), el('b', {}, r.reseller)), r.note ? el('div', { class: 'mut' }, r.note) : null),
-          el('div', { class: 'r' }, el('div', { style: 'font-weight:800;color:' + (r.amount >= 0 ? 'var(--ok)' : '#fca5a5') }, (r.amount >= 0 ? '+' : '−') + money(Math.abs(r.amount), r.currency)), el('div', { class: 'mut', style: 'font-size:.76rem' }, r.at)))))) : el('div', { class: 'mut' }, 'Todavía no han movido saldo.'),
+      card('Últimos movimientos del equipo', team.recent.length ? el('div', { class: 'tscroll' }, el('table', { class: 'ntab' },
+        el('thead', {}, el('tr', {}, ...['Fecha', 'Usuario', 'Tipo', 'Receptor', 'Monto'].map(h => el('th', {}, h)))),
+        el('tbody', {}, ...team.recent.slice(0, 20).map(r => el('tr', {}, el('td', {}, r.at), el('td', {}, el('b', {}, r.by)),
+          el('td', {}, el('span', { class: 'tp ' + (r.kind === 'approval' ? 'ap' : r.amount >= 0 ? 'ad' : 'rm') }, r.kind === 'approval' ? '✔ Aprobó' : r.amount >= 0 ? '➕ Añadió' : '➖ Retiró')),
+          el('td', {}, r.reseller), el('td', { class: r.amount >= 0 ? 'pos' : 'neg' }, (r.amount >= 0 ? '+' : '−') + money(Math.abs(r.amount), r.currency))))))) : el('div', { class: 'mut' }, 'Todavía no han movido saldo.'),
         el('div', { class: 'acts' }, el('button', { class: 'sec sm', onclick: () => { auditCat = 'money'; tab = 'registro'; adminView(); } }, 'Ver todo en Registro'))),
       sect('Sub-administradores'),
       card('Nuevo sub-administrador', el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Un ayudante con acceso limitado. Todo lo que haga queda en la pestaña Registro.'),
         el('div', { class: 'row' }, nu.u, nu.p), ed.node, el('div', { class: 'acts' }, nb), nm),
-      card('Tu equipo', staff.length ? el('div', { class: 'list' }, ...staff.map(m => {
+      card('Tu equipo', staff.length ? el('div', { class: 'tscroll' }, el('table', { class: 'ntab' },
+        el('thead', {}, el('tr', {}, ...['Usuario', 'Último acceso', 'Permisos', '2FA'].map(h => el('th', {}, h)))),
+        el('tbody', {}, ...staff.map(m => el('tr', {}, el('td', {}, el('div', { class: 'tu' }, avatar2(m.username), el('b', {}, m.username))), el('td', {}, m.last_login || 'nunca'),
+          el('td', {}, ...PL.filter(([k]) => m.perms[k]).map(([, t]) => el('span', { class: 'tp pm' }, t.split(' ')[0]))), el('td', {}, m.totp ? el('span', { class: 'okt' }, '✔ Sí') : el('span', { class: 'badt' }, '✖ No'))))))) : null,
+        el('h3', {}, 'Gestionar'), staff.length ? el('div', { class: 'list' }, ...staff.map(m => {
         const pe = permEditor(m.perms);
         return el('div', { style: 'display:block' },
           el('div', {}, el('b', {}, m.username), ' ', m.active ? null : el('span', { class: 'tag off' }, 'Desactivado'),
@@ -1443,9 +1475,9 @@ async function adminView() {
             m.totp ? act('Quitar 2FA', async () => { if (!confirm('¿Quitar la verificación en dos pasos de ' + m.username + '? Tendrá que activarla otra vez.')) throw new Error('Cancelado'); await api('POST', '/api/admin/staff-update', { user_id: m.id, reset_2fa: true }); }) : null,
             act(m.active ? 'Desactivar' : 'Activar', () => api('POST', '/api/admin/staff-update', { user_id: m.id, active: !m.active }), m.active ? 'red' : 'sec')));
       })) : el('div', { class: 'mut' }, 'Todavía no tienes sub-administradores.')),
-      card('Qué NO puede hacer nunca un sub-administrador', el('div', { class: 'mut' }, 'Ver costos, ganancias, ventas o reportes · tocar el catálogo, los precios o los ajustes · ajustar saldos a mano más allá de su permiso, tope y cupo · cambiar márgenes (general o de una cuenta) o contraseñas de revendedores · confiar en billeteras · descargar respaldos · ver el registro o crear otros sub-admins. Si intenta algo que no puede, queda anotado como \"Negado\".')),
+      infoY(el('b', {}, 'Qué NO puede hacer nunca un sub-administrador: '), 'Ver costos, ganancias, ventas o reportes · tocar el catálogo, los precios o los ajustes · ajustar saldos a mano más allá de su permiso, tope y cupo · cambiar márgenes (general o de una cuenta) o contraseñas de revendedores · confiar en billeteras · descargar respaldos · ver el registro o crear otros sub-admins. Si intenta algo que no puede, queda anotado como \"Negado\".'),
       (() => {
-        const bx = el('input', { type: 'checkbox' }); bx.checked = !!Number(st.settings.require_2fa || 0);
+        const bx = el('input', { type: 'checkbox', class: 'sw' }); bx.checked = !!Number(st.settings.require_2fa || 0);
         return card('Seguridad del equipo', el('label', { class: 'chk' }, bx, el('span', {}, el('b', {}, 'Exigir verificación en dos pasos a los sub-admins'), el('small', { class: 'mut', style: 'display:block' }, 'Quien no la tenga activa solo podrá entrar a "Mi cuenta" hasta activarla.'))),
           el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { require_2fa: bx.checked ? 1 : 0 }), '')));
       })(),
