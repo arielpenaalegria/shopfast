@@ -134,7 +134,7 @@ const AUDIT_LABEL = {
   '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/funds': 'Fondos consultados', '/api/admin/user-delete': 'Cuenta borrada',
   '/api/admin/user-update': 'Cuenta modificada', '/api/admin/family': 'Juego/región activado o quitado', '/api/admin/products': 'Paquete activado',
   '/api/admin/product-update': 'Paquete modificado', '/api/admin/resolve': 'Pedido resuelto a mano', '/api/admin/retry': 'Pedido reintentado',
-  '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/wallet-remove': 'Billetera de confianza quitada', '/api/admin/wallet-add': 'Billetera de confianza agregada',
+  '/api/admin/topup-recheck': 'Pago verificado otra vez', '/api/admin/topup-decide': 'Solicitud de saldo decidida', '/api/admin/topup-reject-spam': 'Limpieza de solicitudes spam', '/api/admin/wallet-remove': 'Billetera de confianza quitada', '/api/admin/wallet-add': 'Billetera de confianza agregada',
   '/api/admin/settings': 'Ajustes cambiados', '/api/admin/catalog-sync': 'Catálogo actualizado', '/api/admin/webhook-test': 'Aviso de prueba enviado',
   '/api/2fa/start': 'Activación de 2FA iniciada', '/api/2fa/confirm': '2FA activada', '/api/2fa/disable': '2FA desactivada', '/api/logout-all': 'Sesiones cerradas en todos los dispositivos',
   '/api/admin/backup-send': 'Respaldo enviado a Telegram', '/api/admin/restore': 'Respaldo restaurado', '/api/admin/rates-confirm': 'Tasas CUP confirmadas como vigentes',
@@ -262,8 +262,11 @@ route('POST', '/api/google', null, async (req, res, _u, b) => {
   if (!u) {
     if (st.registration === 'off') return send(res, 403, { error: 'No hay una cuenta con ese correo. Pide una al administrador.' });
     const open = st.registration === 'open';
+    { const ip = A.clientIp(req), t = Date.now(), hits = (regHits.get(ip) || []).filter(x => t - x < 3600e3);
+      if (hits.length >= 5) return send(res, 429, { error: 'Demasiadas cuentas nuevas desde tu conexión. Intenta más tarde.' });
+      hits.push(t); regHits.set(ip, hits); }
     try {
-      await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, google_sub: sub, password_hash: A.hashPassword(crypto.randomBytes(24).toString('hex')), role: 'reseller', google: 1,
+      await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, signup_ip: A.clientIp(req), google_sub: sub, password_hash: A.hashPassword(crypto.randomBytes(24).toString('hex')), role: 'reseller', google: 1,
         balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, markup_manual: 0, trust_wallets: 0, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
     } catch (e) { if (!isDup(e)) throw e; }
     TG.notifyAdmins(`🆕 Nuevo revendedor (Google): ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
@@ -389,7 +392,7 @@ route('POST', '/api/register', null, async (req, res, _u, b) => {
   hits.push(t); regHits.set(ip, hits);
   const open = st.registration === 'open';
   try {
-    await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(pw), role: 'reseller',
+    await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(pw), role: 'reseller', signup_ip: A.clientIp(req),
       balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, markup_manual: 0, trust_wallets: 0, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
   } catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ya existe una cuenta con ese correo' }); throw e; }
   TG.notifyAdmins(`🆕 Nuevo revendedor registrado: ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
@@ -705,7 +708,7 @@ route('GET', '/api/ledger.csv', 'reseller', async (req, res, u) => sendCsv(res, 
 // --- Admin ---
 route('GET', '/api/admin/users', 'staff', async (req, res) =>
   send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
-    .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, markup_manual: !!u.markup_manual, trust_wallets: !!u.trust_wallets, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
+    .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, markup_manual: !!u.markup_manual, deposit_block: !!u.deposit_block, trust_wallets: !!u.trust_wallets, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
 
 route('POST', '/api/admin/users', 'staff', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
@@ -779,6 +782,7 @@ route('POST', '/api/admin/user-update', 'staff', async (req, res, _u, b) => {
   const uid = Number(b.user_id), f = { _id: uid, role: 'reseller' };
   const set = {};
   if (b.active !== undefined) { set.active = b.active ? 1 : 0; if (b.active) set.pending_approval = 0; }
+  if (b.deposit_block !== undefined) set.deposit_block = b.deposit_block ? 1 : 0;
   if (b.markup_pct !== undefined) {
     const m = Number(b.markup_pct);
     if (!(m >= 0 && m <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
@@ -998,7 +1002,28 @@ route('GET', '/api/deposit-info', 'any', async (req, res, u) => {
     suspended: { usdt: !!st.pay_off_usdt, transfer: !!st.pay_off_transfer, mobile: !!st.pay_off_mobile } });
 });
 
+/** Una cuenta "sin probar" es la que nunca ha tenido un pago aprobado. */
+const unproven = async uid => !(await C.topup_requests.countDocuments({ user_id: uid, status: 'approved' }));
+/** Anti-spam de solicitudes de saldo. Devuelve el texto del error, o null si puede seguir. */
+async function depositSpamCheck(u, req) {
+  const fresh = await C.users.findOne({ _id: u.id });
+  if (fresh && fresh.deposit_block) return 'Los depósitos de tu cuenta están bloqueados. Escríbele al administrador.';
+  if (!await unproven(u.id)) return null; // con pagos aprobados antes: sin límites extra
+  const since = new Date(Date.now() - 24 * 3600e3);
+  if (await C.topup_requests.countDocuments({ user_id: u.id, created_at: { $gte: since } }) >= 5) return 'Hiciste muchas solicitudes hoy. Espera a que se abone tu pago o escríbele al administrador.';
+  if (process.env.TRUST_PROXY === 'true') { // solo se mira la conexión si Render nos da la IP real (si no, todos parecerían la misma)
+    const ip = A.clientIp(req);
+    if (ip) {
+      const bad = await C.topup_requests.find({ ip, status: 'rejected', created_at: { $gte: since } }).toArray(), cache = new Map();
+      let n = 0;
+      for (const r of bad) { if (!cache.has(r.user_id)) cache.set(r.user_id, await unproven(r.user_id)); if (cache.get(r.user_id)) n++; }
+      if (n >= 6) return 'Demasiadas solicitudes rechazadas desde tu conexión. Intenta más tarde o escríbele al administrador.';
+    }
+  }
+  return null;
+}
 route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
+  { const spam = await depositSpamCheck(u, req); if (spam) return send(res, 429, { error: spam }); }
   const method = ['usdt', 'transfer', 'mobile'].includes(b.method) ? b.method : 'usdt';
   { const st0 = await getSettings(); if (st0['pay_off_' + method]) return send(res, 400, { error: 'Los pagos por ' + { usdt: 'USDT', transfer: 'transferencia', mobile: 'saldo móvil' }[method] + ' están suspendidos por ahora. Usa otro método o inténtalo más tarde.' }); }
   const hash = (BSC.enabled() && (b.method || 'usdt') === 'usdt') ? '' : String(b.tx_hash || '').trim().toLowerCase(); // con verificación automática ya no se usa hash
@@ -1019,7 +1044,8 @@ route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
   if (method === 'usdt' && BSC.enabled()) {
     // Pago con MONTO EXACTO (sin hash): se le asigna un monto único (ej. 5.0037) y el pago se reconoce solo cuando llega ESE monto exacto.
     if (cents === null || !(cents >= 1)) return send(res, 400, { error: 'Escribe cuánto USDT vas a enviar (desde 0.01).' });
-    if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending', method: 'usdt', expect_e4: { $exists: true } }) >= 2) return send(res, 429, { error: 'Ya tienes 2 pagos esperando. Envía alguno de esos montos o espera a que venzan (24 h).' });
+    const maxWait = (await unproven(u.id)) ? 1 : 2;
+    if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending', method: 'usdt', expect_e4: { $exists: true } }) >= maxWait) return send(res, 429, { error: maxWait === 1 ? 'Ya tienes un pago esperando. Envía ese monto o espera a que venza (24 h).' : 'Ya tienes 2 pagos esperando. Envía alguno de esos montos o espera a que venzan (24 h).' });
     let start = null; try { start = await BSC.blockNumber(); } catch {}
     const taken = new Set((await C.topup_requests.find({ method: 'usdt', status: 'pending', expect_e4: { $exists: true } }).toArray()).map(x => x.expect_e4));
     // Se le suma al monto una pequeña cantidad única en centavos (ej. 5 → 5.08). Se abona TODO lo que envía (5.08).
@@ -1030,7 +1056,7 @@ route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
     if (total > 10000000) return send(res, 400, { error: 'Monto demasiado grande.' });
     const id = await nextId('topup_requests');
     await C.topup_requests.insertOne({ _id: id, user_id: u.id, method: 'usdt', amount_cents: total, amount_cup: null, note: '', image: null, status: 'pending', admin_note: null,
-      approved_cents: null, created_at: now(), decided_at: null, chain: null, verify: 'wait', verify_msg: 'Esperando tu pago', expect_e4: e4, start_block: start, expires_at: new Date(Date.now() + 24 * 3600e3) });
+      approved_cents: null, created_at: now(), decided_at: null, chain: null, ip: A.clientIp(req), verify: 'wait', verify_msg: 'Esperando tu pago', expect_e4: e4, start_block: start, expires_at: new Date(Date.now() + 24 * 3600e3) });
     return send(res, 201, { ok: true, id, auto: 'wait', pay_amount: (e4 / 1e4).toFixed(2), message: `Envía EXACTAMENTE ${(e4 / 1e4).toFixed(2)} USDT (BEP20). Se abona solo al llegar.` });
   }
   if (await C.topup_requests.countDocuments({ user_id: u.id, status: 'pending' }) >= 3) return send(res, 429, { error: 'Ya tienes 3 solicitudes pendientes. Espera a que se revisen.' });
@@ -1039,7 +1065,7 @@ route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
     amount_cents: method === 'usdt' ? cents : b._cup_cents,
     amount_cup: method !== 'usdt' ? b._cup_cents : null,
     note: String(b.note || '').slice(0, 300), image: img, status: 'pending', admin_note: null,
-    approved_cents: null, created_at: now(), decided_at: null, chain: null,
+    approved_cents: null, created_at: now(), decided_at: null, chain: null, ip: A.clientIp(req),
     verify: method !== 'usdt' ? 'manual' : (hash ? (BSC.enabled() ? 'wait' : 'manual') : 'manual'),
     verify_msg: method !== 'usdt' ? null : (hash && !BSC.enabled() ? 'Verificación automática no configurada' : null) };
   if (hash) doc.tx_hash = hash;
@@ -1245,17 +1271,40 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
         const lim = Number(normPerms(admin.perms || {})['max_' + cur]) * 100;
         if (cents > lim) throw httpErr(403, `Supera tu límite de aprobación (${fmtCur(lim, cur)}). Pídele al dueño que lo apruebe.`);
       }
-      await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now() } }, { session: s });
+      await C.topup_requests.updateOne({ _id: id }, { $set: { status: approve ? 'approved' : 'rejected', approved_cents: cents, admin_note: String(b.note || '').slice(0, 200) || null, decided_at: now(), by_admin: 1 } }, { session: s });
       if (approve) {
         await addBalance(s, t.user_id, cents, cur);
         await ledger(s, t.user_id, cents, 'topup', 'req-' + id, `Solicitud #${id} aprobada por ${admin.username}`, cur, admin.role === 'subadmin' ? admin.id : null);
       }
       return { user_id: t.user_id, cents, cur, from: t.chain ? t.chain.from : null };
     });
+    if (!approve) { // rechazar y bloquear / bloqueo automático por rechazos repetidos
+      let why = null;
+      if (b.block) why = 'bloqueado por ' + admin.username;
+      else if (await unproven(r.user_id) && await C.topup_requests.countDocuments({ user_id: r.user_id, status: 'rejected', by_admin: 1, decided_at: { $gte: new Date(Date.now() - 7 * 86400e3) } }) >= 3) why = 'bloqueo automático: 3 solicitudes rechazadas sin ningún pago aprobado';
+      if (why) {
+        await C.users.updateOne({ _id: r.user_id }, { $set: { deposit_block: 1 } });
+        await C.topup_requests.updateMany({ user_id: r.user_id, status: 'pending' }, { $set: { status: 'rejected', admin_note: 'Depósitos bloqueados', decided_at: now(), by_admin: 1 } });
+        const bu = await C.users.findOne({ _id: r.user_id }); TG.notifyAdmins(`⛔ Depósitos bloqueados para ${bu ? bu.username : '?'} (${why}). Se rechazaron sus otras solicitudes pendientes. Puedes permitirlos otra vez en Revendedores.`).catch(() => {});
+      }
+    }
     if (admin.role === 'subadmin') { const tu = await C.users.findOne({ _id: r.user_id }); TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${approve ? 'APROBÓ' : 'rechazó'} la solicitud #${id} de ${tu ? tu.username : '?'}${approve ? ': +' + fmtCur(r.cents, r.cur) : ''}`).catch(() => {}); }
     TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${fmtCur(r.cents, r.cur)} (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
   send(res, 200, { ok: true });
+});
+
+/** Rechaza de una vez los pagos "esperando" de cuentas que nunca han tenido un pago aprobado (spam), con más de 30 min sin pagar. */
+route('POST', '/api/admin/topup-reject-spam', 'staff', async (req, res, admin) => {
+  const old = new Date(Date.now() - 30 * 60e3);
+  const ps = await C.topup_requests.find({ status: 'pending', verify: 'wait', created_at: { $lte: old } }).toArray(), cache = new Map(); let n = 0, users = new Set();
+  for (const t of ps) {
+    if (!cache.has(t.user_id)) cache.set(t.user_id, await unproven(t.user_id));
+    if (!cache.get(t.user_id)) continue;
+    const r = await C.topup_requests.updateOne({ _id: t._id, status: 'pending' }, { $set: { status: 'rejected', admin_note: 'Rechazada en limpieza (cuenta sin pagos aprobados)', decided_at: now(), by_admin: 1 } });
+    if (r.modifiedCount || r.matchedCount) { n++; users.add(t.user_id); }
+  }
+  send(res, 200, { ok: true, rejected: n, users: users.size });
 });
 
 // ---------- Reportes de ganancia ----------
