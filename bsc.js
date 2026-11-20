@@ -40,14 +40,17 @@ async function check(hash) {
     const rc = await rpc('eth_getTransactionReceipt', [hash]);
     if (!rc) return { state: 'wait', msg: 'La transacción todavía no aparece en BSC (o es de otra red).' };
     if (rc.status !== '0x1') return { state: 'bad', msg: 'La transacción falló en la blockchain.' };
-    let total = 0n, from = null;
+    let total = 0n; const senders = new Set();
     for (const l of rc.logs || []) {
       if (String(l.address).toLowerCase() !== USDT || !l.topics || l.topics[0] !== TRANSFER || l.topics.length < 3) continue;
       const to = '0x' + l.topics[2].slice(26).toLowerCase();
       if (to !== WALLET) continue;
       total += BigInt(l.data);
-      from = from || '0x' + l.topics[1].slice(26).toLowerCase();
+      senders.add('0x' + l.topics[1].slice(26).toLowerCase());
     }
+    // Una transacción con pagos de VARIOS remitentes (envíos masivos) no se abona sola: el dinero podría ser de otra persona.
+    if (senders.size > 1) return { state: 'bad', msg: 'Esa transacción trae pagos de varias billeteras distintas; revísala a mano.' };
+    const from = [...senders][0] || null;
     if (!total) return { state: 'bad', msg: 'Esa transacción no envía USDT (BEP20) a la billetera del panel.' };
     const cents = Number(total / 10n ** 16n); // 18 decimales -> centavos (se redondea hacia abajo)
     if (cents < 1) return { state: 'bad', msg: 'El monto es menor a 0.01 USDT: es demasiado pequeño para abonarse.' };
@@ -68,7 +71,7 @@ async function blockNumber() { return parseInt(await rpc('eth_blockNumber', []),
 async function transfersTo(fromBlock, toBlock) {
   const logs = await rpc('eth_getLogs', [{ fromBlock: hex(fromBlock), toBlock: hex(toBlock), address: USDT, topics: [TRANSFER, null, pad32(WALLET)] }]);
   return (logs || []).filter(l => !l.removed && l.topics && l.topics.length >= 3 && String(l.address).toLowerCase() === USDT).map(l => ({
-    tx: String(l.transactionHash).toLowerCase(), from: '0x' + l.topics[1].slice(26).toLowerCase(), cents: Number(BigInt(l.data) / 10n ** 16n), block: parseInt(l.blockNumber, 16) }));
+    tx: String(l.transactionHash).toLowerCase(), from: '0x' + l.topics[1].slice(26).toLowerCase(), cents: Number(BigInt(l.data) / 10n ** 16n), e4: Number(BigInt(l.data) / 10n ** 14n), block: parseInt(l.blockNumber, 16) }));
 }
 
 module.exports = { enabled, check, isHash, blockNumber, transfersTo, wallet: () => (walletOk ? WALLET : null), minConf: MIN_CONF, walletOk: () => walletOk };

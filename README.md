@@ -157,3 +157,17 @@ Los revendedores pueden poner el **nombre y el icono de su tienda** en *Cuenta �
 3. En Render agrega la variable `GOOGLE_CLIENT_ID` con el ID de cliente (termina en `.apps.googleusercontent.com`; no es secreto) y redespliega.
 
 Si la variable no está, el botón no aparece. Entra por Google solo quien tenga el correo verificado; si el correo ya es una cuenta de revendedor, entra a esa cuenta. Si no existe, se aplica el ajuste de registro (cerrado / con aprobación / abierto). Admin y sub-admin siguen entrando solo con usuario, contraseña y 2FA.
+
+## Seguridad de los depósitos USDT (importante)
+El hash de una transacción es **público** (cualquiera lo ve en BscScan). Por eso el panel ya NO registra billeteras solo ni abona con el hash de una billetera desconocida:
+- Un hash solo se abona solo si la billetera que envió ya está **registrada a ese revendedor por el administrador**.
+- Si la billetera es nueva, queda pendiente y el admin debe confirmar con el cliente que ese pago es suyo antes de aprobar.
+- Una transacción con pagos de varias billeteras distintas nunca se abona sola.
+- Al arrancar esta versión se apaga "confiar en billeteras" en todas las cuentas, se revocan las billeteras registradas automáticamente y se manda un informe por Telegram (también queda guardado y sale en los logs de Render).
+
+## Depósitos USDT con monto exacto (sin hash)
+El revendedor escribe cuánto va a enviar (ej. 5 USDT) y el panel le da un monto único, por ejemplo **5.08** (el monto pedido más unos centavos únicos). Al llegar a tu billetera exactamente ese monto (por BSC/BEP20, con las confirmaciones configuradas) se abona solo ese revendedor, desde cualquier billetera, con cualquier saldo. Ya no se pega hash ni se manda captura.
+- El monto exacto es el que identifica al cliente; los centavos extra son únicos entre los pagos pendientes (casi siempre de 1 a 20 centavos). Se abona TODO lo que envía (5.08).
+- Cada pedido vence a las 24 h; cada revendedor puede tener 2 pagos esperando.
+- Pagos que llegan a tu billetera y no coinciden con nada (monto redondo, sin pedido, exchange con comisión…) NO se abonan: aparecen en *Saldo → Pagos USDT sin identificar* y te llega aviso por Telegram para resolverlos a mano.
+- Las billeteras registradas por el admin siguen abonando sin monto exacto (opcional; cuidado con billeteras de exchange, que las comparten miles de personas).
