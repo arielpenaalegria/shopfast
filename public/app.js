@@ -1,5 +1,5 @@
 'use strict';
-document.head.append(Object.assign(document.createElement('style'), { textContent: '.storelogo{width:56px;height:56px;border-radius:14px;object-fit:cover;border:1px solid var(--line)}.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
+document.head.append(Object.assign(document.createElement('style'), { textContent: '.payexact{font-size:2rem;font-weight:800;color:#ff9a3c;letter-spacing:.5px;margin:6px 0;overflow-wrap:anywhere}.payexact small{font-size:1rem;color:var(--mut)}.storelogo{width:56px;height:56px;border-radius:14px;object-fit:cover;border:1px solid var(--line)}.addr{font-family:ui-monospace,Menlo,monospace;font-size:.92rem;word-break:break-all;background:#000;border:1px dashed #ff7a0080;color:#ffd7b0;padding:12px;border-radius:10px;margin-top:6px}.addr-s{font-family:ui-monospace,monospace;word-break:break-all;font-size:.75rem}.msg a,.mut a{color:var(--pri)}.proof{display:block;max-width:100%;max-height:380px;border-radius:10px;margin-top:8px;border:1px solid var(--line);cursor:zoom-in}.payinfo{background:#000;border:1px dashed #ff7a0080;border-radius:10px;padding:6px 12px}.payinfo .pl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #ffffff12;overflow-wrap:anywhere}.payinfo .pl:last-child{border:0}.payinfo .pl span{color:#ffd7b0}.steps{margin:0 0 10px;padding-left:20px;color:var(--mut);font-size:.88rem}.steps li{margin:3px 0}.big{font-size:1.05rem;padding:13px}.zoom{position:fixed;inset:0;background:#000e;z-index:50;display:flex;align-items:center;justify-content:center;padding:10px;cursor:zoom-out}.zoom img{max-width:100%;max-height:100%;border-radius:8px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0}.row3 .fld{font-size:.78rem;min-width:0}.row3 input{padding:10px 8px;font-size:.95rem}.bals{display:grid;gap:6px;margin:6px 0 4px}.bals>div{display:flex;justify-content:space-between;align-items:baseline;background:#0000002a;border-radius:10px;padding:8px 12px}.bals span{font-size:.88rem;color:#ffedd5}.bals b{font-size:1.35rem;font-weight:900}.bals small{font-size:.8rem;font-weight:700}.paych{display:flex;flex-direction:column;align-items:flex-start;border-radius:12px;text-align:left}.paych small{font-weight:500;font-size:.74rem;opacity:.8}.paych.low:not(.on){opacity:.55}' }));
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...kids) => {
   const e = document.createElement(tag);
@@ -611,34 +611,33 @@ async function resellerView() {
     };
 
     if (method === 'usdt') {
-      const hash = el('input', { placeholder: 'Hash de la transacción (0x…)', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' });
-      const amount = el('input', { type: 'number', inputmode: 'decimal', min: '0.01', step: '0.01', placeholder: 'Monto enviado en USDT (desde 0.01)' });
-      const sendBtn = el('button', { class: 'big' }, 'Enviar solicitud');
-      sendBtn.onclick = () => {
-        const h = hash.value.trim().replace(/\s+/g, '');
-        if (!h && !amount.value) return msg(reqBox, 'Pega el hash del envío, o abre "¿No tienes el hash?" e indica el monto.', 'err');
-        const av = Number(String(amount.value).replace(',', '.'));
-        if (amount.value && !(av >= 0.01)) return msg(reqBox, 'El monto debe ser de 0.01 USDT o más.', 'err');
-        if (h && !/^0x[0-9a-fA-F]{64}$/.test(h)) return msg(reqBox, 'El hash no es válido: empieza por 0x y tiene 66 caracteres. Cópialo completo desde tu billetera.', 'err');
-        submit(sendBtn, { method: 'usdt', tx_hash: h, amount: amount.value.replace(',', '.') }, h ? 'Verificando el pago…' : 'Enviando…');
-      };
+      const amount = el('input', { type: 'number', inputmode: 'decimal', min: '0.01', step: '0.01', placeholder: 'Cuánto USDT vas a enviar (desde 0.01)' });
       const copyBtn = el('button', { class: 'sec sm' }, 'Copiar dirección');
       copyBtn.onclick = async () => { try { await navigator.clipboard.writeText(dep.wallet); copyBtn.textContent = '✓ Copiada'; } catch { prompt('Copia:', dep.wallet); } };
-      const manual = el('details', { class: 'regd' }, el('summary', {}, el('span', { class: 'mut' }, '¿No tienes el hash? Revisión manual ›')),
-        el('div', { class: 'mut', style: 'margin:8px 0' }, 'Indica el monto y adjunta una captura del envío. El admin lo revisará.'),
-        el('div', { class: 'row' }, amount));
+      const warn = el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si envías por otra red el dinero se pierde.');
+      const sendBtn = el('button', { class: 'big' }, dep.auto ? 'Generar mi monto exacto' : 'Enviar solicitud');
+      sendBtn.onclick = () => {
+        const av = Number(String(amount.value).replace(',', '.'));
+        if (!(av >= 0.01)) return msg(reqBox, 'Escribe un monto de 0.01 USDT o más.', 'err');
+        submit(sendBtn, { method: 'usdt', amount: amount.value.replace(',', '.') }, 'Generando…');
+      };
+      if (dep.auto) {
+        const mine = reqs.filter(r => r.status === 'pending' && r.pay_amount && r.method === 'usdt');
+        const cp = (txt, b) => async () => { try { await navigator.clipboard.writeText(txt); b.textContent = '✓ Copiado'; } catch { prompt('Copia:', txt); } };
+        return el('div', {},
+          ...mine.map(r => { const cb = el('button', { class: 'sec sm' }, 'Copiar monto'); cb.onclick = cp(r.pay_amount, cb);
+            return card('⏳ Pago esperando · pedido #' + r.id, el('div', { class: 'mut' }, 'Envía EXACTAMENTE este monto (los centavos cuentan):'),
+              el('div', { class: 'payexact' }, r.pay_amount, el('small', {}, ' USDT')), el('div', { class: 'acts' }, cb),
+              el('div', { class: 'mut', style: 'margin-top:8px' }, `Se abonan a tu saldo los ${r.amount.toFixed(2)} USDT completos en 1-2 minutos después de que llegue. Vence: ${r.expires_at}.`),
+              el('div', { class: 'msg warn', style: 'margin:8px 0 0' }, 'Si el monto no es exacto, no se reconoce solo. Si tu exchange cobra comisión de retiro, ajusta para que a la billetera le LLEGUE ese monto exacto.')); }),
+          card('1. Dirección donde enviar', warn, el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn)),
+          card('2. ¿Cuánto vas a enviar?', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te damos un monto único (por ejemplo, si pides 5 te toca 5.08). Envía ese monto exacto y se te abona completo y se abona solo, sin pegar hash ni mandar capturas.'),
+            el('div', { class: 'row' }, amount), el('div', { class: 'acts' }, sendBtn), reqBox));
+      }
       return el('div', {},
-        card('1. Envía USDT a esta billetera',
-          el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '⚠ Solo USDT por la red BSC (BEP20). Si envías por otra red el dinero se pierde.'),
-          el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn),
-          el('div', { class: 'mut', style: 'margin-top:8px' }, 'Puedes enviar cualquier monto (desde 0.01 USDT). Se abona a tu saldo USDT lo que llegue.'),
-          // Si ya tiene una billetera registrada, el pago se acredita solo, sin hash ni comprobante
-          dep.autoscan && (dep.my_wallets || []).length ? el('div', { class: 'msg ok', style: 'margin:10px 0 0' }, el('b', {}, '⚡ Abono automático activo. '),
-            `Todo lo que envíes desde ${dep.my_wallets.map(a => a.slice(0, 6) + '…' + a.slice(-4)).join(' o ')} se abona solo en 1-2 minutos. No tienes que pegar el hash ni enviar nada. `, el('span', { class: 'mut' }, 'Si pagas desde otra billetera, usa el paso 2.')) : null),
-        card('2. Pega el hash del envío', el('div', { class: 'mut', style: 'margin-bottom:8px' },
-          dep.auto ? 'Se comprueba en la blockchain y se te abona solo, normalmente en menos de un minuto.' : 'El admin revisará el pago y te abonará el saldo.'),
-          el('div', { class: 'row' }, hash), manual, el('div', { class: 'row', style: 'margin-top:8px' }, note), proof.node,
-          el('div', { class: 'acts' }, sendBtn), reqBox));
+        card('1. Envía USDT a esta billetera', warn, el('div', { class: 'addr' }, dep.wallet), el('div', { class: 'acts' }, copyBtn)),
+        card('2. Avisa tu envío', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'El admin revisará el pago y te abonará el saldo.'),
+          el('div', { class: 'row' }, amount), el('div', { class: 'row', style: 'margin-top:8px' }, note), proof.node, el('div', { class: 'acts' }, sendBtn), reqBox));
     }
 
     // Transferencia bancaria o Saldo móvil (siempre revisión manual del admin)
@@ -721,8 +720,9 @@ async function resellerView() {
       card('Mis solicitudes', reqs.length ? el('div', { class: 'list' }, ...reqs.map(r => el('div', {},
         el('div', { class: 'l' }, el('div', {}, `#${r.id} · ${METHOD_L[r.method] || 'USDT'}`),
           el('div', { class: 'mut' }, r.created_at + (r.tx_hash ? ' · ' + r.tx_hash.slice(0, 10) + '…' : '') + (r.note ? ' · ' + r.note : '')),
-          r.status === 'pending' && r.verify === 'wait' ? el('div', { class: 'mut' }, '⏳ ' + (r.verify_msg || 'Confirmando en BSC…')) : null,
-          r.status === 'pending' && r.verify !== 'wait' ? el('div', { class: 'mut' }, 'En revisión por el administrador') : null,
+          r.status === 'pending' && r.pay_amount ? el('div', { class: 'mut' }, '⏳ Esperando tu envío de ' + r.pay_amount + ' USDT') : null,
+          r.status === 'pending' && !r.pay_amount && r.verify === 'wait' ? el('div', { class: 'mut' }, '⏳ ' + (r.verify_msg || 'Confirmando en BSC…')) : null,
+          r.status === 'pending' && !r.pay_amount && r.verify !== 'wait' ? el('div', { class: 'mut' }, 'En revisión por el administrador') : null,
           r.admin_note ? el('div', { class: 'mut' }, r.admin_note) : null),
         el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')));
   }
@@ -899,13 +899,9 @@ async function adminView() {
       (() => {
         const S = st.settings, mode = el('select', {}, ...[['approval', 'Abierto, con mi aprobación'], ['open', 'Abierto, sin aprobación'], ['off', 'Cerrado (solo yo creo cuentas)']]
           .map(([v, l]) => el('option', { value: v, selected: S.registration === v ? '' : null }, l)));
-        const tw = el('input', { type: 'checkbox' }); tw.checked = !!Number(S.trust_new_wallets);
         return card('Registro de revendedores', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores pueden crearse una cuenta con su correo en ' + location.origin + '. Las cuentas nuevas nacen con el margen general de arriba (' + S.default_markup + '%).'),
           el('div', { class: 'row' }, mode),
-          el('label', { class: 'chk' }, tw, el('span', {}, el('b', {}, 'Confiar en las billeteras de las cuentas nuevas'),
-            el('small', { class: 'mut', style: 'display:block' }, 'Activado: la primera billetera USDT desde la que pague una cuenta nueva se registra como de confianza y se le abona sola, sin que la apruebes. Solo cuenta para las cuentas que se creen desde ahora; en las que ya existen lo activas una por una en Revendedores → Más opciones.'),
-            el('small', { style: 'display:block;color:#fcd34d;margin-top:4px' }, 'Ojo: una cuenta con esto activo podría reclamar con su hash un pago hecho por otra persona a tu billetera. Actívalo solo si confías en tus revendedores.'))),
-          el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { registration: mode.value, trust_new_wallets: tw.checked ? 1 : 0 }), '')));
+          el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { registration: mode.value }), '')));
       })(),
       sect('Avisos'),
       card('Alerta de saldo bajo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te aviso por Telegram (y aquí arriba) cuando el saldo de Central One baje de este monto. 0 = desactivada.'),
@@ -993,7 +989,7 @@ async function adminView() {
   }
 
   if (tab === 'saldo') {
-    const [dep, wallets] = await Promise.all([api('GET', '/api/deposit-info'), OWN ? api('GET', '/api/admin/wallets') : none([])]);
+    const [dep, wallets, unmatched] = await Promise.all([api('GET', '/api/deposit-info'), OWN ? api('GET', '/api/admin/wallets') : none([]), api('GET', '/api/admin/usdt-unmatched').catch(() => [])]);
     const showImg = async (r, holder, b) => {
       b.disabled = true;
       try {
@@ -1065,6 +1061,10 @@ async function adminView() {
         el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
       card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Las que vienen de una billetera de confianza se aprueban solas. Las demás las revisas aquí.' + (OWN ? '' : ` Tu límite por aprobación: ${limLine(ME.perms, 'max_')}.`)),
       reqFilters, reqCnt, reqBox),
+      unmatched.length ? card('❔ Pagos USDT sin identificar', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Llegaron a tu billetera pero no coinciden con ningún pago pedido (monto distinto, sin solicitud…). Si el dueño es un cliente, pídele su comprobante y abónale a mano.'),
+        el('div', { class: 'list' }, ...unmatched.slice(0, 15).map(x => el('div', {}, el('div', { class: 'l' }, el('div', {}, x.usdt.toFixed(4) + ' USDT'),
+          el('div', { class: 'mut addr-s' }, 'desde ' + x.from), el('div', { class: 'mut' }, new Date(x.at).toLocaleString('es'))),
+          el('div', { class: 'r' }, el('a', { href: 'https://bscscan.com/tx/' + x.tx, target: '_blank', rel: 'noopener' }, 'BscScan')))))) : null,
       OWN && card('Billeteras de confianza',
         el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Todo USDT que llegue a tu billetera desde una de estas direcciones se abona solo a su revendedor, con cualquier monto (desde 0.01) y sin que tenga que pegar el hash ni enviar comprobante. No pongas billeteras de exchanges (Binance, etc.): las comparten muchas personas.'),
         wallets.length ? el('div', { class: 'list' }, ...wallets.map(w => el('div', {},
@@ -1163,10 +1163,9 @@ async function adminView() {
     const defM = OWN ? Number(st.settings.default_markup ?? 10) : 0;
     const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off', 'aria-label': 'Usuario' }), p: el('input', { placeholder: 'Contraseña (8+)', type: 'password', autocomplete: 'new-password', 'aria-label': 'Contraseña' }),
       m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', step: 'any', value: String(defM), 'aria-label': 'Margen %' }) };
-    const tw = el('input', { type: 'checkbox' }); tw.checked = !!Number(st.settings.trust_new_wallets);
     const create = el('button', {}, 'Crear cuenta');
     create.onclick = async () => {
-      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.'), ...(OWN ? { trust_wallets: tw.checked } : {}) }); adminView(); }
+      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.')}); adminView(); }
       catch (e) { msg(note, e.message, 'err'); }
     };
     const usersBox = el('div');
@@ -1193,10 +1192,6 @@ async function adminView() {
           el('div', { class: 'acts', style: 'margin:0 0 10px' },
             act('Cambiar margen', async () => { const a = prompt(`Margen % para ${r.username}.\nQuedará como MANUAL 🔒: el cambio general ya no lo toca.`, r.markup_pct); if (a !== null && a.trim() !== '') await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
             r.markup_manual ? act('Margen: volver a automático', () => api('POST', '/api/admin/user-update', { user_id: r.id, markup_auto: true })) : null,
-            act(r.trust_wallets ? '🔓 Quitar confianza en billeteras' : '🔒 Confiar en sus billeteras', async () => {
-              if (!r.trust_wallets && !confirm(`¿Confiar en las billeteras de ${r.username}?\n\nSu primera billetera nueva se registra y se le abona sola, sin que la apruebes. No lo actives si paga desde un exchange o si no confías en esta persona.`)) throw new Error('Cancelado');
-              await api('POST', '/api/admin/user-update', { user_id: r.id, trust_wallets: !r.trust_wallets });
-            }),
             act('Cambiar clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }))) : null);
     };
     const renderUsers = () => {
@@ -1218,7 +1213,7 @@ async function adminView() {
     put(out, el('details', { class: 'card newrev', open: users.length ? null : '' }, el('summary', {}, el('h2', { style: 'margin:0' }, '＋ Nuevo revendedor'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
       el('div', { style: 'margin-top:12px' }, el('div', { class: 'row' }, nu.u, nu.p),
         OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, `Margen % (general: ${defM}%)`, nu.m)) : null,
-        OWN ? el('label', { class: 'chk' }, tw, el('span', {}, el('b', {}, 'Confiar en sus billeteras'), el('small', { class: 'mut', style: 'display:block' }, 'Su primera billetera USDT se registra y se abona sola.'))) : null,
+        null,
         el('div', { class: 'acts' }, create),
         el('div', { class: 'mut', style: 'margin-top:8px' }, OWN ? `Precio para él = costo de Central One + su margen %. Si dejas el margen general (${defM}%), la cuenta sigue los cambios generales; si pones otro, queda como manual 🔒.` : 'La cuenta se crea con el margen general que puso el dueño.'), note)),
       searchBar, usersBox);
