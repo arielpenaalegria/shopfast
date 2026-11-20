@@ -291,7 +291,8 @@ async function boot() {
   try {
     const me = await api('GET', '/api/me');
     ME = me;
-    $('who').replaceChildren(el('span', {}, me.username + (me.role === 'subadmin' ? ' (sub-admin)' : '') + ' · '),
+    $('who').replaceChildren(
+      el('button', { class: 'acct', onclick: () => { if (me.role === 'admin' || me.role === 'subadmin') { tab = me.role === 'admin' ? 'seguridad' : 'cuenta'; adminView(); } else { rtab = 'cuenta'; resellerView(); } window.scrollTo(0, 0); } }, el('span', {}, '👤'), 'Mi cuenta'),
       el('a', { href: '#', onclick: async e => { e.preventDefault(); await api('POST', '/api/logout', {}); show('login'); } }, 'Salir'));
     show('app');
     me.role === 'admin' || me.role === 'subadmin' ? adminView() : resellerView();
@@ -801,6 +802,15 @@ async function resellerView() {
 }
 
 /* =================== ADMIN =================== */
+/** Pone un icono delante de los títulos de cada tarjeta del panel (solo adorno). */
+function decorate(root) {
+  const MAP = [['hoy', '📅'], ['saldo en central', '🪙'], ['equipo', '🛡️'], ['sub-admin', '🛡️'], ['pedido', '📦'], ['revendedor', '👥'], ['cat', '🎮'], ['seguridad', '🔒'], ['registro', '📜'], ['ajuste', '⚙️'], ['venta', '📈'], ['fondo', '🏦'], ['cupo', '📊'], ['movimiento', '🕒'], ['usdt', '💲'], ['nuev', '➕'], ['telegram', '✈️'], ['google', '🔑'], ['tienda', '🏪'], ['depósit', '💳'], ['solicitud', '📝'], ['anuncio', '📢'], ['mantenimiento', '🛠️'], ['contraseña', '🔐'], ['cuenta', '👤'], ['ganancia', '💎'], ['reporte', '📈']];
+  root.querySelectorAll('.card > h2, .rbox > h2').forEach(h => {
+    if (h.querySelector('.h2i') || /^\p{Extended_Pictographic}/u.test(h.textContent.trim())) return;
+    const t = h.textContent.toLowerCase(), m = MAP.find(([k]) => t.includes(k)); if (!m) return;
+    h.prepend(el('span', { class: 'h2i' }, m[1]));
+  });
+}
 let tab = 'resumen', catQuery = '', period = 'day', navOpen = null;
 async function adminView() {
   clearTimeout(timer);
@@ -883,18 +893,16 @@ async function adminView() {
   const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tFondos, tPed, ['reportes', 'Ventas'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro'], ['seguridad', ME.totp ? '🔒 Seguridad' : '⚠️ Seguridad'], ['ajustes', 'Ajustes']]
     : [can('saldo') && tSaldo, can('saldos') && tFondos, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
   if (!tabs.some(t => t[0] === tab)) { tab = tabs[0][0]; if (tab === 'cuenta' && can('saldo')) tab = 'saldo'; }
-  { // Menú de secciones: botones de 2 en 2; abierto en el inicio y plegado (se abre al tocar) en las demás secciones
-    const IC = { resumen: '📊', saldo: '💰', fondos: '🏦', pedidos: '📦', reportes: '📈', revendedores: '👥', catalogo: '🛍️', equipo: '🧑‍💼', registro: '📜', ajustes: '⚙️', cuenta: '👤' };
+  { // Inicio: botones de 2 en 2. En cada sección: barra con su título y botón de casa para volver al menú.
+    const IC = { resumen: '📊', saldo: '💰', fondos: '🏦', pedidos: '📦', reportes: '📈', revendedores: '👥', catalogo: '🎮', equipo: '🧑‍💼', registro: '📜', ajustes: '⚙️', cuenta: '👤' };
     const split = ([k, l]) => IC[k] ? [IC[k], l] : [String(l).split(' ')[0], String(l).split(' ').slice(1).join(' ')];
-    const [ci, cl] = split(tabs.find(t => t[0] === tab) || tabs[0]);
-    const nav = el('details', { class: 'navg' }, el('summary', {}, el('span', { class: 'ni2' }, ci), el('b', {}, cl), el('i', {}, '›')),
-      el('div', { class: 'navgrid' }, ...tabs.map(t => { const [i, l] = split(t); return el('button', { class: t[0] === tab ? 'on' : '', onclick: () => { tab = t[0]; navOpen = null; adminView(); } }, el('span', { class: 'ti' }, i), l); })));
-    nav.open = navOpen !== null ? navOpen : tab === tabs[0][0];
-    nav.addEventListener('toggle', () => { navOpen = nav.open; });
-    put(out, nav);
+    const go = k => { tab = k; adminView(); window.scrollTo(0, 0); };
+    if (tab === tabs[0][0]) put(out, el('div', { class: 'navgrid' }, ...tabs.map(t => { const [i, l] = split(t); return el('button', { class: t[0] === tab ? 'on' : '', onclick: () => go(t[0]) }, el('span', { class: 'ti' }, i), l); })));
+    else { const [ci, cl] = split(tabs.find(t => t[0] === tab) || tabs[0]);
+      put(out, el('div', { class: 'secbar' }, el('div', { class: 'st' }, el('span', { class: 'si2' }, ci), el('b', {}, cl)), el('button', { class: 'home', title: 'Menú', onclick: () => go(tabs[0][0]) }, '🏠'))); }
   }
   // Aviso fijo mientras el dueño no tenga la verificación en dos pasos
-  if (OWN && !ME.totp && tab !== 'seguridad') put(out, el('div', { class: 'secban' }, el('div', {}, el('b', {}, '🔒 Protege tu cuenta de dueño'), el('div', { class: 'mut' }, 'Activa la verificación en dos pasos: aunque alguien tenga tu contraseña, no podrá entrar sin tu celular.')),
+  if (OWN && !ME.totp && tab === tabs[0][0]) put(out, el('div', { class: 'secban' }, el('div', {}, el('b', {}, '🔒 Protege tu cuenta de dueño'), el('div', { class: 'mut' }, 'Activa la verificación en dos pasos: aunque alguien tenga tu contraseña, no podrá entrar sin tu celular.')),
     el('button', { class: 'sm', onclick: () => { tab = 'seguridad'; adminView(); } }, 'Activar ahora')));
   if (tab === 'seguridad' && OWN) {
     const item = (ok, t, d) => el('div', { class: 'secitem' }, el('span', { class: 'secdot ' + (ok ? 'ok' : 'bad') }, ok ? '✓' : '!'), el('div', {}, el('b', {}, t), el('div', { class: 'mut' }, d)));
@@ -1487,6 +1495,7 @@ async function adminView() {
       el('div', { class: 'mut' }, 'Todo lo que haces queda registrado.')), ...accountCards(true));
   }
 
+  decorate(out);
   if (orders.some(o => ['pending', 'processing'].includes(o.status)) && ['resumen', 'pedidos'].includes(tab) || (tab === 'saldo' && reqs.some(r => r.status === 'pending' && r.verify === 'wait'))) {
     // el admin tiene campos ya rellenos: solo se pausa si está escribiendo, mirando una foto o con una ventana abierta
     const busy = () => { const a = document.activeElement; return (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) || Date.now() - lastTyping < 60000 || !!document.querySelector('.zoom, img.proof, .modal'); };
