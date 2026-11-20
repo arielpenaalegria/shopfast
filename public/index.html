@@ -436,6 +436,40 @@ input.sw:before{content:"";position:absolute;top:3px;left:3px;width:24px;height:
 input.sw:checked{background:linear-gradient(180deg,#22c55e,#0d7a35)!important}input.sw:checked:before{transform:translateX(22px)}
 .pcards>div{display:grid!important;grid-template-columns:auto 1fr;gap:8px 12px!important}.pcards .l{min-width:0}.pcards .r{grid-column:1/-1}
 .lim3{grid-template-columns:1fr!important}.lim3>div{display:flex;justify-content:space-between;align-items:center;gap:10px}.lim3 span{min-height:0!important;font-size:.8rem}.lim3 b{text-align:right;margin:0}
+
+/* ===== Ajuste a cualquier pantalla (móvil) ===== */
+html,body{max-width:100%;overflow-x:hidden}
+main,#app,.card,.ocard,.frow,.rbox,.lim,details,summary,.infoy,.infobar,.ofoot{min-width:0;max-width:100%}
+#app>*{min-width:0}
+.ocards,.frows,.rgrid{grid-template-columns:minmax(0,1fr)!important}
+.omid,.fbal,.lim3,.oacts,.navgrid,.tiles,.tiles2,.stats3,.bal3{grid-template-columns:repeat(var(--n,2),minmax(0,1fr))}
+.omid{--n:2}.fbal{--n:3}.oacts{--n:2}.navgrid{--n:2}.tiles,.tiles2{--n:3}.stats3{--n:3}.bal3{--n:3}
+.lim3{grid-template-columns:minmax(0,1fr)!important}
+.frow{grid-template-columns:minmax(0,1fr) auto!important}
+.pcards>div{grid-template-columns:auto minmax(0,1fr)!important}
+.oinfo,.oinfo *,.ocell,.ref,.mut,.ocard .mut,.rname,.fwho,.l,.lim b,.limp,.ibt,.cardh h2{overflow-wrap:anywhere;word-break:break-word}
+.oinfo .on{overflow-wrap:anywhere}
+.otop{flex-wrap:wrap}.otop .ost{margin-left:auto}
+@media (max-width:440px){
+  .otop .oinfo{flex:1 1 calc(100% - 140px)}
+  .gb{width:54px;height:54px;font-size:1.7rem}
+  .card:not(.hero):not(.login){padding:14px}
+  .ocard{padding:12px}.omid{gap:8px}
+  .secbar .st b{font-size:1.4rem}.secbar .home{width:54px;min-height:54px}
+  .cardh{flex-wrap:wrap}
+}
+input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;width:100%;color:#fff;text-align:left;display:block}
+input[type=date]::-webkit-date-and-time-value{text-align:left;min-height:1.3em;color:#fff}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.8}
+.ordf,.row>label,.fld{min-width:0}
+@media (max-width:400px){header{margin:8px 8px 6px;padding:10px 8px}.brand img{width:42px;height:42px;border-radius:13px}.brand b{font-size:clamp(.95rem,5.2vw,1.2rem)}#who .acct{font-size:0;padding:6px 8px}#who .acct span{font-size:1.2rem}}
+.navgrid button:not(.on),.tabs4 button:not(.on){background:linear-gradient(180deg,#171235,#0b0820) padding-box,linear-gradient(120deg,#a855f7,#ff8a1f) border-box!important;border:2px solid transparent!important;box-shadow:0 0 16px -8px #a855f7!important;text-shadow:none!important;color:#fff}
+.navgrid button.on,.tabs4 button.on{background:linear-gradient(180deg,#ffb020,#ff6a00 60%,#e0430a) padding-box,linear-gradient(120deg,#ffe08a,#ff8a1f) border-box!important;border:2px solid transparent!important}
+@media (max-width:400px){
+.tabs4{gap:5px}.tabs4 button{flex-direction:column!important;gap:2px!important;padding:8px 2px!important;min-height:62px!important;font-size:.76rem!important;border-radius:16px!important}.tabs4 button .ti{font-size:1.35rem!important}
+.heroh>span{font-size:1.15rem!important;gap:6px}.heroh>span img{width:34px;height:34px}.heroh button{padding:8px 12px;font-size:.88rem;gap:6px}
+.bal3 span{font-size:.72rem!important;gap:3px}.bal3 b{font-size:1.45rem!important}
+}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b><span class="bn">Shop <em>Fast</em></span></b></div><span id="who"></span></header>
 <main>
