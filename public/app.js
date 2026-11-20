@@ -801,7 +801,7 @@ async function resellerView() {
 }
 
 /* =================== ADMIN =================== */
-let tab = 'resumen', catQuery = '', period = 'day';
+let tab = 'resumen', catQuery = '', period = 'day', navOpen = null;
 async function adminView() {
   clearTimeout(timer);
   const out = $('app');
@@ -883,7 +883,16 @@ async function adminView() {
   const tabs = OWN ? [['resumen', 'Resumen'], tSaldo, tFondos, tPed, ['reportes', 'Ventas'], tRev, ['catalogo', 'Catálogo'], ['equipo', 'Equipo'], ['registro', 'Registro'], ['seguridad', ME.totp ? '🔒 Seguridad' : '⚠️ Seguridad'], ['ajustes', 'Ajustes']]
     : [can('saldo') && tSaldo, can('saldos') && tFondos, can('pedidos') && tPed, can('revendedores') && tRev, ['cuenta', 'Mi cuenta']].filter(Boolean);
   if (!tabs.some(t => t[0] === tab)) { tab = tabs[0][0]; if (tab === 'cuenta' && can('saldo')) tab = 'saldo'; }
-  put(out, el('div', { class: 'tabs' + (OWN ? ' tabsx' : '') }, ...tabs.map(([k, l]) => el('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; adminView(); } }, l))));
+  { // Menú de secciones: botones de 2 en 2; abierto en el inicio y plegado (se abre al tocar) en las demás secciones
+    const IC = { resumen: '📊', saldo: '💰', fondos: '🏦', pedidos: '📦', reportes: '📈', revendedores: '👥', catalogo: '🛍️', equipo: '🧑‍💼', registro: '📜', ajustes: '⚙️', cuenta: '👤' };
+    const split = ([k, l]) => IC[k] ? [IC[k], l] : [String(l).split(' ')[0], String(l).split(' ').slice(1).join(' ')];
+    const [ci, cl] = split(tabs.find(t => t[0] === tab) || tabs[0]);
+    const nav = el('details', { class: 'navg' }, el('summary', {}, el('span', { class: 'ni2' }, ci), el('b', {}, cl), el('i', {}, '▾')),
+      el('div', { class: 'navgrid' }, ...tabs.map(t => { const [i, l] = split(t); return el('button', { class: t[0] === tab ? 'on' : '', onclick: () => { tab = t[0]; navOpen = null; adminView(); } }, el('span', { class: 'ti' }, i), l); })));
+    nav.open = navOpen !== null ? navOpen : tab === tabs[0][0];
+    nav.addEventListener('toggle', () => { navOpen = nav.open; });
+    put(out, nav);
+  }
   // Aviso fijo mientras el dueño no tenga la verificación en dos pasos
   if (OWN && !ME.totp && tab !== 'seguridad') put(out, el('div', { class: 'secban' }, el('div', {}, el('b', {}, '🔒 Protege tu cuenta de dueño'), el('div', { class: 'mut' }, 'Activa la verificación en dos pasos: aunque alguien tenga tu contraseña, no podrá entrar sin tu celular.')),
     el('button', { class: 'sm', onclick: () => { tab = 'seguridad'; adminView(); } }, 'Activar ahora')));
