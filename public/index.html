@@ -470,6 +470,24 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.8}
 .heroh>span{font-size:1.15rem!important;gap:6px}.heroh>span img{width:34px;height:34px}.heroh button{padding:8px 12px;font-size:.88rem;gap:6px}
 .bal3 span{font-size:.72rem!important;gap:3px}.bal3 b{font-size:1.45rem!important}
 }
+/* ===== Cantidad y carrito ===== */
+.qbox{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-radius:20px;margin:10px 0;border:1.5px solid #f5b50099;background:linear-gradient(100deg,#2a1d04,#150f06);box-shadow:0 0 20px -10px #f5b500}
+.qstep{display:flex;align-items:center;gap:6px;padding:4px;border-radius:999px;background:#07050f;border:1.5px solid #3b2f78}
+.qb{width:42px;height:42px;min-height:0!important;padding:0!important;border-radius:50%!important;font-size:1.5rem;line-height:1;background:#241a55!important;border:0!important;box-shadow:none!important;color:#fff;text-shadow:none!important}
+.qb.plus{background:linear-gradient(180deg,#8b5cf6,#5b21b6)!important}
+.qv{min-width:34px;text-align:center;font-size:1.25rem}
+.qstep.sm .qb{width:34px;height:34px;font-size:1.2rem}
+.cartbar{position:fixed;left:10px;right:10px;bottom:10px;z-index:30;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px 10px 16px;border-radius:22px;border:1.5px solid #c084fc;background:linear-gradient(100deg,#1b1340,#0e0a22);box-shadow:0 0 28px -6px #a855f7,0 10px 30px -10px #000}
+.cartbar>div{min-width:0}.cartbar b{display:block;color:#ffb020;font-size:1.15rem;overflow-wrap:anywhere}.cartbar .mut{font-size:.78rem}
+.cartbtn{flex:none;min-height:46px;padding:0 16px;font-size:1rem}
+#app:has(.cartbar){padding-bottom:84px}
+.cartsheet{max-width:520px}
+.cartlist{display:grid;gap:10px;margin-bottom:12px}
+.cartitem{display:flex;align-items:center;gap:10px;padding:10px;border-radius:18px;border:1.5px solid #3b2f78;background:#0c0922}
+.cartitem .ci{flex:1;min-width:0;display:grid;gap:2px}.cartitem .ci b:first-child{overflow-wrap:anywhere}.cartitem .mut{font-size:.78rem}
+.carttot{display:grid;gap:6px;margin-bottom:10px}
+.carttot>div{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;border-radius:14px;background:#120e2b;border:1.5px solid #3b2f78}.carttot>div.low{border-color:#ef4444}.carttot b{color:#ffb020}
+.sheet.cartsheet .acts{display:grid;grid-template-columns:1fr;gap:8px}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b><span class="bn">Shop <em>Fast</em></span></b></div><span id="who"></span></header>
 <main>

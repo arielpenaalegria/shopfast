@@ -509,12 +509,19 @@ function checkNewlyCompleted(orders) {
 
 /* =================== REVENDEDOR =================== */
 const pick = { family: null, variant: null, product: null, fill: null };
+/* ---- Carrito: varias ofertas (con su cantidad) y se envían todas juntas ---- */
+const MAXQ = 20;
+let cart = [];
+const cartLoad = u => { try { cart = JSON.parse(localStorage.getItem('cart_' + u) || '[]').filter(i => i && i.pid && i.qty > 0 && i.target && i.cur); } catch { cart = []; } };
+const cartSave = u => { try { localStorage.setItem('cart_' + u, JSON.stringify(cart)); } catch {} };
+const mulP = (x, n, c) => c === 'usdt' ? Math.round(x * n * 100) / 100 : x * n;
 let scrollTo3 = false, rtab = 'recargar';
 async function resellerView() {
   clearTimeout(timer);
   const [me, products, orders, led, reqs, extra, dep] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/products'), api('GET', '/api/orders'),
     api('GET', '/api/ledger'), api('GET', '/api/topup-requests'), api('GET', '/api/me-extra'), api('GET', '/api/deposit-info')]);
   const bal = me.balances || { usdt: me.balance, transfer: 0, mobile: 0 };
+  cartLoad(me.username);
   checkNewlyCompleted(orders);
   storeInfo = { name: extra.store_name || '', logo: extra.store_logo || '' }; paintBrand();
   const out = $('app'); out.replaceChildren();
@@ -560,7 +567,7 @@ async function resellerView() {
     const n = vars.size > 1 ? 3 : 2;
     put(buy, el('h3', {}, n + '. Elige el paquete'),
       types.length > 1 ? el('div', { class: 'chips', style: 'margin-bottom:10px' }, ...types.map(([k, l]) => el('button', { class: 'chip' + (k === pick.ptype ? ' on' : ''), onclick: () => { pick.ptype = k; pick.product = null; renderBuy(); } }, `${l} (${byType.get(k).length})`))) : null,
-      el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { pick.product = p.id; scrollTo3 = true; renderBuy(); } },
+      el('div', { class: 'grid' }, ...list.map(p => el('button', { class: 'pkg' + (p.id === pick.product ? ' on' : ''), onclick: () => { if (pick.product !== p.id) pick.qty = 1; pick.product = p.id; scrollTo3 = true; renderBuy(); } },
         shortName(p.name), el('b', {}, money(priceIn(p, payCur), payCur))))));
     const p = list.find(x => x.id === pick.product);
     if (!p) return;
@@ -595,36 +602,60 @@ async function resellerView() {
     };
     // El saldo con el que paga es el tipo de pago elegido arriba (independiente de los demás)
     const priceOf = c => priceIn(p, c);
-    const btn = el('button', { class: 'big' });
+    let qty = Math.max(1, Math.min(MAXQ, Number(pick.qty) || 1));
+    const qv = el('b', { class: 'qv' }, String(qty));
+    const setQ = n => { qty = Math.max(1, Math.min(MAXQ, n)); pick.qty = qty; qv.textContent = String(qty); renderPay(); };
+    const stepper = el('div', { class: 'qbox' }, el('div', {}, el('b', {}, '¿Cuántos?'), el('div', { class: 'mut' }, 'Puedes pedir más de uno')),
+      el('div', { class: 'qstep' }, el('button', { type: 'button', class: 'qb', onclick: () => setQ(qty - 1) }, '−'), qv, el('button', { type: 'button', class: 'qb plus', onclick: () => setQ(qty + 1) }, '+')));
+    const btn = el('button', { class: 'big' }), cbtn = el('button', { type: 'button', class: 'sec' }, '🛒 Agregar al carrito');
     const payBox = el('div');
+    const totalNow = () => mulP(priceOf(payCur), qty, payCur);
     const renderPay = () => {
-      const pr = priceOf(payCur), enough = bal[payCur] >= pr;
-      btn.textContent = `Enviar · ${money(pr, payCur)}`;
+      const tot = totalNow(), enough = bal[payCur] >= tot;
+      btn.textContent = qty > 1 ? `Enviar ${qty} · ${money(tot, payCur)}` : `Enviar · ${money(tot, payCur)}`;
       payBox.replaceChildren(); put(payBox, el('div', { class: 'paysum' + (enough ? '' : ' low') },
         el('span', {}, CUR_ICON[payCur] + ' Tu saldo disponible'), el('b', {}, money(bal[payCur], payCur))),
         enough ? null : el('div', { class: 'msg err', style: 'margin:8px 0 0' }, `No te alcanza el saldo ${CUR_LONG[payCur]}. Cambia el tipo de pago arriba o pide saldo.`));
     };
     renderPay();
-    btn.onclick = async () => {
+    const readTarget = () => {
       const t = target();
       const empty = p.fields.find(f => !String(t[f.key] || '').trim());
-      if (empty) { msg(vbox, `Falta: ${empty.label}`, 'err'); inputs[empty.key].focus(); return; }
+      if (empty) { msg(vbox, `Falta: ${empty.label}`, 'err'); inputs[empty.key].focus(); return null; }
       for (const k of Object.keys(t)) t[k] = String(t[k]).trim();
-      if (bal[payCur] < priceOf(payCur)) { msg(vbox, `Saldo ${CUR_LONG[payCur]} insuficiente. Elige otro saldo o pide saldo.`, 'err'); return; }
-      if (!confirm(`¿Enviar ${p.name}\na ${Object.values(t).join(' · ')}\n\nSe pagará con saldo ${CUR_LONG[payCur]}: ${money(priceOf(payCur), payCur)}?`)) return;
-      btn.disabled = true;
-      try {
-        const d = await api('POST', '/api/orders', { product_id: p.id, target: t, currency: payCur });
-        flash = d.status === 'unknown' ? [d.message, 'warn'] : ['Recarga enviada. Se está procesando; el estado se actualiza solo.', 'ok'];
-        pick.product = null;
-      } catch (e) { flash = [e.message, 'err']; }
+      return t;
+    };
+    cbtn.onclick = () => {
+      const t = readTarget(); if (!t) return;
+      const key = JSON.stringify(t), ex = cart.find(i => i.pid === p.id && i.cur === payCur && JSON.stringify(i.target) === key);
+      if (ex) ex.qty = Math.min(50, ex.qty + qty); else cart.push({ pid: p.id, target: t, qty, cur: payCur });
+      cartSave(me.username); pick.qty = 1;
+      flash = [`🛒 Agregado al carrito: ${qty} × ${shortName(p.name)} para ${Object.values(t).join(' · ')}. Puedes seguir agregando o abrir el carrito.`, 'ok'];
+      resellerView();
+    };
+    btn.onclick = async () => {
+      const t = readTarget(); if (!t) return;
+      const tot = totalNow();
+      if (bal[payCur] < tot) { msg(vbox, `Saldo ${CUR_LONG[payCur]} insuficiente. Elige otro saldo o pide saldo.`, 'err'); return; }
+      if (!confirm(`¿Enviar ${qty > 1 ? qty + ' × ' : ''}${p.name}\na ${Object.values(t).join(' · ')}\n\nSe pagará con saldo ${CUR_LONG[payCur]}: ${money(tot, payCur)}?`)) return;
+      btn.disabled = cbtn.disabled = true;
+      let ok = 0, unk = 0, err = null;
+      for (let k = 0; k < qty; k++) {
+        btn.textContent = `Enviando ${k + 1} de ${qty}…`;
+        try { const d = await api('POST', '/api/orders', { product_id: p.id, target: t, currency: payCur }); ok++; if (d.status === 'unknown') unk++; }
+        catch (e) { err = e.message; break; }
+      }
+      if (err) flash = [ok ? `Se enviaron ${ok} de ${qty}. Se detuvo: ${err}` : err, 'err'];
+      else flash = unk ? [`${ok} recarga${ok > 1 ? 's' : ''} enviada${ok > 1 ? 's' : ''}. ${unk} no se pudo confirmar todavía: se está verificando, no la repitas.`, 'warn']
+        : [ok > 1 ? `${ok} recargas enviadas. Se están procesando; el estado se actualiza solo.` : 'Recarga enviada. Se está procesando; el estado se actualiza solo.', 'ok'];
+      pick.product = null; pick.qty = 1;
       resellerView();
     };
     const step3 = el('h3', {}, (n + 1) + '. Datos del jugador · ' + shortName(p.name));
     put(buy, step3,
       recent.length ? el('div', { class: 'recents' }, el('span', { class: 'mut', style: 'align-self:center' }, 'Recientes:'),
         ...recent.map(t => el('button', { class: 'chip', onclick: () => fillWith(t) }, Object.values(t).join(' · ')))) : null,
-      el('div', { class: 'row' }, ...fields), payBox, el('div', { class: 'row' }, vbtn, btn), vbox);
+      el('div', { class: 'row' }, ...fields), stepper, payBox, el('div', { class: 'row' }, vbtn, cbtn), btn, vbox);
     if (scrollTo3) { scrollTo3 = false; setTimeout(() => { step3.scrollIntoView({ behavior: 'smooth', block: 'start' }); if (!recent.length && fields[0]) fields[0].focus(); }, 50); }
   };
 
@@ -743,6 +774,45 @@ async function resellerView() {
         el('b', {}, c === 'usdt' ? Number(bal[c]).toFixed(2) : Math.round(bal[c]).toLocaleString('es')), el('small', {}, c === 'usdt' ? 'USDT' : 'CUP'))))),
     el('div', { class: 'tabs tabs4' }, ...tabs.map(([k, ic, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, el('span', { class: 'ti' }, ic), l))));
 
+  const cartTotals = () => { const t = { usdt: 0, transfer: 0, mobile: 0 }; for (const i of cart) { const p = byId.get(i.pid); const pr = p ? priceIn(p, i.cur) : null; if (pr != null) t[i.cur] = mulP(pr, 1, i.cur) * i.qty + t[i.cur]; } for (const c of CURS) t[c] = c === 'usdt' ? Math.round(t[c] * 100) / 100 : t[c]; return t; };
+  const totText = t => CURS.filter(c => t[c] > 0).map(c => money(t[c], c)).join(' + ') || '—';
+  const openCart = () => {
+    const m = el('div', { class: 'modal', onclick: e => { if (e.target === m) m.remove(); } }), body = el('div'), note2 = el('div');
+    m.append(el('div', { class: 'sheet cartsheet' }, el('div', { class: 'cardh' }, el('h2', {}, '🛒 Tu carrito'), el('button', { class: 'sec sm', onclick: () => m.remove() }, '✕')), body));
+    document.body.append(m);
+    const draw = () => {
+      cart = cart.filter(i => byId.has(i.pid) && priceIn(byId.get(i.pid), i.cur) != null); cartSave(me.username);
+      body.replaceChildren();
+      if (!cart.length) { put(body, el('div', { class: 'mut', style: 'padding:14px 0' }, 'El carrito está vacío.')); const bb = $('cartbar'); if (bb) bb.remove(); return; }
+      const tot = cartTotals(), lack = CURS.filter(c => tot[c] > bal[c]), units = cart.reduce((a, i) => a + i.qty, 0);
+      put(body, el('div', { class: 'cartlist' }, ...cart.map(i => { const p = byId.get(i.pid), pr = priceIn(p, i.cur);
+        return el('div', { class: 'cartitem' }, gameBadge(p.family, 'sm'),
+          el('div', { class: 'ci' }, el('b', {}, shortName(p.name)), el('div', { class: 'mut' }, Object.values(i.target).join(' · ') + ' · ' + CUR_S[i.cur]), el('b', { class: 'pr' }, money(mulP(pr, i.qty, i.cur), i.cur))),
+          el('div', { class: 'qstep sm' }, el('button', { type: 'button', class: 'qb', onclick: () => { i.qty--; if (i.qty < 1) cart.splice(cart.indexOf(i), 1); cartSave(me.username); draw(); } }, i.qty > 1 ? '−' : '🗑'), el('b', { class: 'qv' }, String(i.qty)), el('button', { type: 'button', class: 'qb plus', onclick: () => { i.qty = Math.min(50, i.qty + 1); cartSave(me.username); draw(); } }, '+'))); })),
+        el('div', { class: 'carttot' }, ...CURS.filter(c => tot[c] > 0).map(c => el('div', { class: tot[c] > bal[c] ? 'low' : '' }, el('span', {}, CUR_ICON[c] + ' ' + CUR_LONG[c]), el('b', {}, money(tot[c], c)), el('small', { class: 'mut' }, 'saldo: ' + money(bal[c], c))))),
+        lack.length ? el('div', { class: 'msg err', style: 'margin:8px 0' }, `No te alcanza el saldo ${lack.map(c => CUR_LONG[c]).join(' ni ')}. Quita algo o pide saldo.`) : null,
+        note2,
+        el('div', { class: 'acts' }, (() => {
+          const go = el('button', { class: 'big', disabled: lack.length ? '' : null }, `⚡ Comprar todo · ${units} recarga${units > 1 ? 's' : ''}`);
+          go.onclick = async () => {
+            if (!confirm(`¿Enviar ${units} recarga${units > 1 ? 's' : ''}?\n\n` + cart.map(i => `${i.qty} × ${byId.get(i.pid).name} → ${Object.values(i.target).join(' · ')}`).join('\n') + `\n\nTotal: ${totText(tot)}`)) return;
+            go.disabled = true; let ok = 0, unk = 0, err = null;
+            outer: for (const it of [...cart]) while (it.qty > 0) {
+              go.textContent = `Enviando ${ok + 1} de ${units}…`;
+              try { const d = await api('POST', '/api/orders', { product_id: it.pid, target: it.target, currency: it.cur }); ok++; if (d.status === 'unknown') unk++; it.qty--; cartSave(me.username); }
+              catch (e) { err = e.message; break outer; }
+            }
+            cart = cart.filter(i => i.qty > 0); cartSave(me.username); m.remove();
+            flash = err ? [`Se enviaron ${ok} de ${units}. Se detuvo: ${err} Lo que falta sigue en tu carrito.`, 'err']
+              : unk ? [`${ok} recargas enviadas. ${unk} no se pudo confirmar todavía: se está verificando, no la repitas.`, 'warn'] : [`✅ ${ok} recarga${ok > 1 ? 's' : ''} enviada${ok > 1 ? 's' : ''}. Se están procesando; el estado se actualiza solo.`, 'ok'];
+            resellerView();
+          };
+          return go; })(), el('button', { class: 'sec', onclick: () => { if (confirm('¿Vaciar el carrito?')) { cart = []; cartSave(me.username); m.remove(); resellerView(); } } }, 'Vaciar')));
+    };
+    draw();
+  };
+  if (cart.length) { cart = cart.filter(i => byId.has(i.pid) && priceIn(byId.get(i.pid), i.cur) != null); const units = cart.reduce((a, i) => a + i.qty, 0);
+    if (units) put(out, el('div', { class: 'cartbar', id: 'cartbar' }, el('div', {}, el('span', { class: 'mut' }, `${units} recarga${units > 1 ? 's' : ''} en el carrito`), el('b', {}, totText(cartTotals()))), el('button', { class: 'cartbtn', onclick: openCart }, '🛒 Ver carrito'))); }
   if (rtab === 'recargar' && me.maintenance) put(out, el('div', { class: 'pausecard' }, el('div', { class: 'pi' }, el('div', { class: 'dot' }, 'i'), el('div', {}, el('h2', {}, 'Recargas en pausa'), el('p', {}, 'Mientras dure el mantenimiento no se pueden enviar recargas. Tus saldos están seguros y puedes seguir pidiendo saldo.'))), icon('bigshield', 'big-shield')));
   else if (rtab === 'recargar') {
     renderBuy();
