@@ -2,7 +2,7 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#07050f">
 <link rel="icon" href="favicon.jpg">
-<title>Shop Fast · Panel de revendedores</title>
+<title>Shop Fast</title>
 <style>
 :root{--bg:#0b0b0d;--card:#16161a;--card2:#1e1e24;--ink:#f4f4f5;--mut:#a1a1aa;--line:#2a2a31;--pri:#ff7a00;--pri2:#ff4d00;--ok:#22c55e;--err:#ef4444;--warn:#f59e0b;--r:14px}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
@@ -284,8 +284,18 @@ input,select,textarea{background:#140f2b;border-color:#2d2552}
 .navgrid button{display:flex;align-items:center;justify-content:flex-start;gap:10px;padding:14px 12px;min-height:58px;border-radius:18px;background:linear-gradient(180deg,#171235,#0e0a22);color:#fff;border:1.5px solid #3b2f78;box-shadow:0 0 0 1px #ffffff08 inset;font-size:.98rem;font-weight:700;text-align:left}
 .navgrid button .ti{font-size:1.45rem;line-height:1;flex:none}
 .navgrid button.on{background:linear-gradient(180deg,#ffb020,#ff6a00 60%,#e0430a);border-color:#ffd089;box-shadow:0 0 0 1px #fff3 inset,0 0 22px -4px #ff7a00}
+
+/* ===== Pulido v5 ===== */
+header{margin:10px 10px 6px;border:1.5px solid #a855f7aa;border-radius:26px;box-shadow:0 0 26px -8px #a855f7,0 0 0 1px #ff7a0044 inset;padding:14px}
+.brand{align-items:center}.brand b{display:flex;align-items:center;font-size:clamp(1.3rem,8vw,2rem);padding-top:8px}
+.bn{position:relative}.bn::before{content:"👑";position:absolute;top:-17px;left:46%;font-size:1.05rem;filter:drop-shadow(0 0 6px #f59e0b)}
+.navg>summary i{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:linear-gradient(180deg,#ff7a2a,#e0430a);box-shadow:0 0 0 1px #fff4 inset;font-size:1.6rem;line-height:1;padding-bottom:3px}
+.navg[open]>summary i{transform:rotate(90deg)}
+.navgrid button,.tabs4 button:not(.on){border:2px solid transparent;background:linear-gradient(180deg,#171235,#0b0820) padding-box,linear-gradient(120deg,#a855f7,#ff8a1f) border-box;box-shadow:0 0 16px -8px #a855f7}
+.navgrid button.on{background:linear-gradient(180deg,#ffb020,#ff6a00 60%,#e0430a) padding-box,linear-gradient(120deg,#ffe08a,#ff8a1f) border-box}
+.brand b{font-size:clamp(1.1rem,5.6vw,1.7rem)}.brand img{width:58px;height:58px}
 </style></head><body>
-<header><div class="brand"><img src="logo.jpg" alt=""><b><span class="bn">Shop <em>Fast</em></span><small>Panel de revendedores</small></b></div><span id="who"></span></header>
+<header><div class="brand"><img src="logo.jpg" alt=""><b><span class="bn">Shop <em>Fast</em></span></b></div><span id="who"></span></header>
 <main>
  <div id="login" class="card login hidden"><img src="logo.jpg" alt="Shop Fast"><h2>Iniciar sesión</h2>
   <input id="lu" placeholder="Usuario" autocomplete="username"><input id="lp" type="password" placeholder="Contraseña" autocomplete="current-password">

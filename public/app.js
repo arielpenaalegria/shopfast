@@ -887,7 +887,7 @@ async function adminView() {
     const IC = { resumen: '📊', saldo: '💰', fondos: '🏦', pedidos: '📦', reportes: '📈', revendedores: '👥', catalogo: '🛍️', equipo: '🧑‍💼', registro: '📜', ajustes: '⚙️', cuenta: '👤' };
     const split = ([k, l]) => IC[k] ? [IC[k], l] : [String(l).split(' ')[0], String(l).split(' ').slice(1).join(' ')];
     const [ci, cl] = split(tabs.find(t => t[0] === tab) || tabs[0]);
-    const nav = el('details', { class: 'navg' }, el('summary', {}, el('span', { class: 'ni2' }, ci), el('b', {}, cl), el('i', {}, '▾')),
+    const nav = el('details', { class: 'navg' }, el('summary', {}, el('span', { class: 'ni2' }, ci), el('b', {}, cl), el('i', {}, '›')),
       el('div', { class: 'navgrid' }, ...tabs.map(t => { const [i, l] = split(t); return el('button', { class: t[0] === tab ? 'on' : '', onclick: () => { tab = t[0]; navOpen = null; adminView(); } }, el('span', { class: 'ti' }, i), l); })));
     nav.open = navOpen !== null ? navOpen : tab === tabs[0][0];
     nav.addEventListener('toggle', () => { navOpen = nav.open; });
