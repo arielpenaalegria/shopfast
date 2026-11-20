@@ -129,7 +129,7 @@ function quotaOf(u) {
   return out;
 }
 const AUDIT_LABEL = {
-  '/api/login': 'Inicio de sesión', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
+  '/api/login': 'Inicio de sesión', '/api/google': 'Inicio de sesión con Google', '/api/register': 'Registro de cuenta nueva', '/api/change-password': 'Cambio de contraseña propia',
   '/api/orders': 'Recarga enviada', '/api/topup-requests': 'Solicitud de saldo enviada', '/api/validate': 'ID verificado',
   '/api/admin/users': 'Revendedor creado', '/api/admin/balance': 'Ajuste manual de saldo', '/api/admin/funds': 'Fondos consultados', '/api/admin/user-delete': 'Cuenta borrada',
   '/api/admin/user-update': 'Cuenta modificada', '/api/admin/family': 'Juego/región activado o quitado', '/api/admin/products': 'Paquete activado',
@@ -227,6 +227,44 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
   C.users.updateOne({ _id: u._id }, { $set: { last_login: now(), last_ip: A.clientIp(req) } }).catch(() => {});
   send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id, u.sv || 0), 12 * 3600) });
 });
+// ---------- Inicio de sesión con Google (solo revendedores) ----------
+// Requiere GOOGLE_CLIENT_ID (ID de cliente OAuth "Aplicación web"). El token lo valida Google; aquí se comprueba audiencia, emisor, vencimiento y correo verificado.
+const GOOGLE_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_TOKENINFO = process.env.GOOGLE_TOKENINFO_URL || 'https://oauth2.googleapis.com/tokeninfo';
+const googleHits = new Map();
+route('POST', '/api/google', null, async (req, res, _u, b) => {
+  if (!GOOGLE_ID) return send(res, 404, { error: 'El inicio con Google no está activado.' });
+  if (hitLimit(googleHits, A.clientIp(req), 30)) return send(res, 429, { error: 'Demasiados intentos. Intenta más tarde.' });
+  const cred = String(b.credential || '');
+  if (!/^[\w-]+\.[\w-]+\.[\w-]+$/.test(cred) || cred.length > 4000) return send(res, 400, { error: 'Credencial inválida' });
+  let t;
+  try {
+    const r = await fetch(GOOGLE_TOKENINFO + '?id_token=' + encodeURIComponent(cred), { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return send(res, 401, { error: 'Google no aceptó el inicio de sesión. Intenta otra vez.' });
+    t = await r.json();
+  } catch { return send(res, 502, { error: 'No se pudo hablar con Google. Intenta otra vez.' }); }
+  const email = String(t.email || '').trim().toLowerCase();
+  if (t.aud !== GOOGLE_ID || !['accounts.google.com', 'https://accounts.google.com'].includes(t.iss) || String(t.email_verified) !== 'true' || !(Number(t.exp) * 1000 > Date.now()) || !email || email.length > 120)
+    return send(res, 401, { error: 'Google no aceptó el inicio de sesión. Intenta otra vez.' });
+  const st = await getSettings();
+  let u = await C.users.findOne({ $or: [{ username_lc: email }, { email }] });
+  if (u && u.role !== 'reseller') return send(res, 403, { error: 'Las cuentas del equipo entran con usuario y contraseña.' });
+  if (!u) {
+    if (st.registration === 'off') return send(res, 403, { error: 'No hay una cuenta con ese correo. Pide una al administrador.' });
+    const open = st.registration === 'open';
+    try {
+      await C.users.insertOne({ _id: await nextId('users'), username: email, username_lc: email, email, password_hash: A.hashPassword(crypto.randomBytes(24).toString('hex')), role: 'reseller', google: 1,
+        balance_cents: 0, bal_transfer_cents: 0, bal_mobile_cents: 0, markup_pct: st.default_markup, markup_manual: 0, trust_wallets: st.trust_new_wallets ? 1 : 0, active: open ? 1 : 0, pending_approval: open ? 0 : 1, self_registered: 1, created_at: now() });
+    } catch (e) { if (!isDup(e)) throw e; }
+    TG.notifyAdmins(`🆕 Nuevo revendedor (Google): ${email}${open ? '' : '\nEstá pendiente de tu aprobación (pestaña Revendedores).'}`).catch(() => {});
+    u = await C.users.findOne({ username_lc: email });
+  }
+  if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
+  if (u.totp_on) return send(res, 403, { error: 'Tu cuenta tiene verificación en dos pasos: entra con tu contraseña y el código.' });
+  res.audit = { actor: u.username, role: u.role, label: 'Inicio de sesión con Google' };
+  C.users.updateOne({ _id: u._id }, { $set: { last_login: now(), last_ip: A.clientIp(req), email: u.email || email } }).catch(() => {});
+  send(res, 200, { ok: true, role: u.role }, { 'Set-Cookie': A.cookieHeader(A.makeSession(u._id, u.sv || 0), 12 * 3600) });
+});
 route('POST', '/api/logout', null, (req, res) => send(res, 200, { ok: true }, { 'Set-Cookie': A.cookieHeader('', 0) }));
 
 
@@ -279,7 +317,7 @@ route('GET', '/api/me', 'any', async (req, res, u) => {
 });
 
 // Registro público de revendedores (correo + contraseña). Según el ajuste: cerrado, con aprobación del admin o abierto.
-route('GET', '/api/public-config', null, async (req, res) => send(res, 200, { registration: (await getSettings()).registration }));
+route('GET', '/api/public-config', null, async (req, res) => send(res, 200, { registration: (await getSettings()).registration, google_client_id: GOOGLE_ID || null }));
 const regHits = new Map();
 route('POST', '/api/register', null, async (req, res, _u, b) => {
   const st = await getSettings();
@@ -1582,7 +1620,7 @@ async function bootstrapAdmin() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg', '.png': 'image/png' };
 const SEC = {
   'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; script-src 'self' https://accounts.google.com/gsi/client; img-src 'self' data: blob: https://*.googleusercontent.com; frame-src https://accounts.google.com; connect-src 'self' https://accounts.google.com; frame-ancestors 'none'",
 };
 
 const server = http.createServer(async (req, res) => {

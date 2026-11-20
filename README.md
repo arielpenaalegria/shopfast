@@ -150,3 +150,10 @@ Cuando una recarga pasa a *Completada* el panel muestra un efecto de éxito (con
 El nombre de la cuenta sale de la verificación de ID de Central One (si el revendedor no pulsó «Verificar ID», el panel lo consulta solo en segundo plano al hacer el pedido). Si el juego no devuelve nombre, el comprobante dice «No disponible».
 
 Los revendedores pueden poner el **nombre y el icono de su tienda** en *Cuenta → Mi tienda*; salen arriba del panel y en sus comprobantes (si no ponen nada, se usa Shop Fast).
+
+## Inicio de sesión con Google (revendedores)
+1. En https://console.cloud.google.com → *APIs y servicios → Credenciales → Crear credenciales → ID de cliente de OAuth → Aplicación web*.
+2. En **Orígenes de JavaScript autorizados** pon la dirección de tu panel (p. ej. `https://shopfast-1xu1.onrender.com`). No hace falta URI de redirección.
+3. En Render agrega la variable `GOOGLE_CLIENT_ID` con el ID de cliente (termina en `.apps.googleusercontent.com`; no es secreto) y redespliega.
+
+Si la variable no está, el botón no aparece. Entra por Google solo quien tenga el correo verificado; si el correo ya es una cuenta de revendedor, entra a esa cuenta. Si no existe, se aplica el ajuste de registro (cerrado / con aprobación / abierto). Admin y sub-admin siguen entrando solo con usuario, contraseña y 2FA.
