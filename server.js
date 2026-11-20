@@ -934,8 +934,7 @@ const short = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '';
 
 route('GET', '/api/deposit-info', 'any', async (req, res, u) => {
   const st = await getSettings();
-  const mine = u && u.role === 'reseller' ? (await C.wallets.find({ user_id: u.id }).toArray()).map(w => w._id) : [];
-  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), autoscan: BSC.enabled() && !!st.usdt_autoscan, my_wallets: mine, network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf,
+  send(res, 200, { wallet: BSC.wallet(), auto: BSC.enabled(), network: 'BSC (BEP20)', token: 'USDT', min_confirmations: BSC.minConf,
     payment_transfer: st.payment_transfer, payment_mobile: st.payment_mobile,
     rates: { transfer: st.rate_transfer, mobile: st.rate_mobile },
     suspended: { usdt: !!st.pay_off_usdt, transfer: !!st.pay_off_transfer, mobile: !!st.pay_off_mobile } });
@@ -1023,7 +1022,7 @@ async function verifyDeposit(id) {
     }
     // Pago válido en la blockchain
     const chain = { from: r.from, cents: r.cents, block: r.block };
-    let w = await C.wallets.findOne({ _id: r.from });
+    const w = null; // las billeteras ya no autorizan abonos automáticos: un hash válido siempre lo confirma el admin
     // Una billetera NUEVA nunca se registra sola: el hash de una transacción es público y cualquiera podría reclamar el pago de otro.
     // El administrador debe aprobar la primera vez (y comprobar con quién habló) o registrar la billetera él mismo.
     if (w && w.user_id === t.user_id) {
@@ -1069,7 +1068,7 @@ async function scanDeposits() {
       const found = await BSC.transfersTo(from, to);
       const byTx = new Map();
       for (const t of found) { const k = t.tx + '|' + t.from, x = byTx.get(k) || { tx: t.tx, from: t.from, cents: 0, e4: 0, block: t.block }; x.cents += t.cents; x.e4 += t.e4; byTx.set(k, x); }
-      for (const t of byTx.values()) await creditScanned(t, !!st.usdt_autoscan).catch(e => console.error('escáner', t.tx.slice(0, 12), e.message));
+      for (const t of byTx.values()) await creditScanned(t).catch(e => console.error('escáner', t.tx.slice(0, 12), e.message));
       await kvSet('bsc_scan_block', to); from = to + 1;
     }
   } catch (e) {
@@ -1103,32 +1102,11 @@ async function creditTagged(t) {
   TG.notifyAdmins(`✅ Depósito automático #${req._id}: ${u.username} +${(cents / 100).toFixed(2)} USDT (monto exacto) desde ${short(t.from)}`).catch(() => {});
   return true;
 }
-async function creditScanned(t, walletsOn) {
+async function creditScanned(t) {
   if (t.cents < 1) return;
-  if (await C.topup_requests.findOne({ tx_hash: t.tx })) return; // ya tiene solicitud (por hash): la maneja la verificación normal
+  if (await C.topup_requests.findOne({ tx_hash: t.tx })) return; // ya se abonó o tiene solicitud
   if (await creditTagged(t)) return;
-  const w = walletsOn ? await C.wallets.findOne({ _id: t.from }) : null;
-  if (!w) return noteUnmatched(t, 'El monto no es exacto o la billetera no está registrada.'); // remitente desconocido: no se abona (puede ser un exchange o un envío ajeno)
-  const u = await C.users.findOne({ _id: w.user_id, role: 'reseller' });
-  if (!u || !u.active) return;
-  const chain = { from: t.from, cents: t.cents, block: t.block };
-  const done = await withTx(async s => {
-    // Si el revendedor ya había pedido ese mismo monto sin hash, se cierra ESA solicitud (así nadie abona dos veces)
-    const open = await C.topup_requests.findOne({ user_id: u._id, status: 'pending', method: 'usdt', tx_hash: { $exists: false }, expect_e4: { $exists: false }, amount_cents: t.cents }, { session: s });
-    const set = { status: 'approved', approved_cents: t.cents, chain, verify: 'ok', verify_msg: 'Detectado en BSC', tx_hash: t.tx, admin_note: 'Abonado automáticamente (billetera de confianza)', decided_at: now() };
-    let id;
-    if (open) { id = open._id; const ch = await C.topup_requests.updateOne({ _id: id, status: 'pending' }, { $set: set }, { session: s }); if (!ch.modifiedCount) return null; }
-    else {
-      id = await nextId('topup_requests', s);
-      await C.topup_requests.insertOne({ _id: id, user_id: u._id, method: 'usdt', amount_cents: t.cents, amount_cup: null, note: 'Depósito detectado automáticamente', image: null, created_at: now(), ...set }, { session: s });
-    }
-    await addBalance(s, u._id, t.cents);
-    await ledger(s, u._id, t.cents, 'topup', 'req-' + id, `USDT BEP20 · detectado automáticamente (#${id})`);
-    return id;
-  }).catch(e => { if (isDup(e)) return null; throw e; });
-  if (!done) return;
-  TG.notifyUser(u._id, `✅ Recibimos tu pago: se te abonaron ${(t.cents / 100).toFixed(2)} USDT.`).catch(() => {});
-  TG.notifyAdmins(`✅ Depósito automático #${done}: ${u.username} +${(t.cents / 100).toFixed(2)} USDT desde ${short(t.from)} (sin hash)`).catch(() => {});
+  return noteUnmatched(t, 'El monto no es exacto o no hay un pedido que coincida.'); // no se abona a nadie: puede ser un envío ajeno
 }
 async function recheckDeposits() {
   if (!BSC.enabled()) return;
@@ -1160,9 +1138,8 @@ route('GET', '/api/admin/topup-requests', 'staff', async (req, res) => {
   if (method) rs = rs.filter(r => (r.method || 'usdt') === method);
   if (q) rs = rs.filter(r => [r._id, '#' + r._id, us.get(r.user_id), r.note, r.tx_hash, r.admin_note].map(x => x ?? '').join(' ').toLowerCase().includes(q));
   rs = rs.slice(0, limit);
-  const ws = new Map((await C.wallets.find({}).toArray()).map(w => [w._id, w.user_id]));
   send(res, 200, rs.map(r => ({ ...trOut(r, true), username: us.get(r.user_id),
-    wallet_owner: r.chain && ws.has(r.chain.from) ? us.get(ws.get(r.chain.from)) : null })));
+    wallet_owner: null })));
 });
 route('GET', '/api/admin/topup-image', 'staff', async (req, res) => {
   const r = await C.topup_requests.findOne({ _id: Number(new URL(req.url, 'http://x').searchParams.get('id')) });
@@ -1174,8 +1151,7 @@ route('POST', '/api/admin/topup-recheck', 'staff', async (req, res, _u, b) => {
   send(res, 200, { ok: true, result: BSC.enabled() ? await verifyDeposit(id) : 'manual' });
 });
 route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => {
-  const id = Number(b.id), approve = !!b.approve, trust = !!b.trust_wallet && admin.role === 'admin';
-  let trusted = false;
+  const id = Number(b.id), approve = !!b.approve;
   try {
     const r = await withTx(async s => {
       const t = await C.topup_requests.findOne({ _id: id, status: 'pending' }, { session: s });
@@ -1196,38 +1172,10 @@ route('POST', '/api/admin/topup-decide', 'staff', async (req, res, admin, b) => 
       }
       return { user_id: t.user_id, cents, cur, from: t.chain ? t.chain.from : null };
     });
-    // "Confiar en esta billetera": sus próximos pagos de ESTE revendedor se aprueban solos
-    if (approve && trust && r.from) {
-      const w = await C.wallets.findOne({ _id: r.from });
-      if (!w) { try { await C.wallets.insertOne({ _id: r.from, user_id: r.user_id, created_at: now(), by: admin.username }); trusted = true; } catch (e) { if (!isDup(e)) throw e; } }
-      else trusted = w.user_id === r.user_id;
-    }
     if (admin.role === 'subadmin') { const tu = await C.users.findOne({ _id: r.user_id }); TG.notifyAdmins(`👤 ${admin.username} (sub-admin) ${approve ? 'APROBÓ' : 'rechazó'} la solicitud #${id} de ${tu ? tu.username : '?'}${approve ? ': +' + fmtCur(r.cents, r.cur) : ''}`).catch(() => {}); }
     TG.notifyUser(r.user_id, approve ? `✅ Se te abonaron ${fmtCur(r.cents, r.cur)} (solicitud #${id}).` : `❌ Tu solicitud de saldo #${id} fue rechazada.${b.note ? '\n' + b.note : ''}`).catch(() => {});
   } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
-  send(res, 200, { ok: true, trusted });
-});
-route('GET', '/api/admin/wallets', 'admin', async (req, res) => {
-  const us = new Map((await C.users.find({}).toArray()).map(x => [x._id, x.username]));
-  send(res, 200, (await C.wallets.find({}).sort({ created_at: -1 }).toArray()).map(w => ({ address: w._id, username: us.get(w.user_id), created_at: fmt(w.created_at), auto: w.by === 'auto' })));
-});
-/** El dueño registra la billetera de un revendedor: desde ahí, todo USDT que llegue de ella se abona solo (cualquier monto). */
-route('POST', '/api/admin/wallet-add', 'admin', async (req, res, admin, b) => {
-  const address = String(b.address || '').trim().toLowerCase(), uid = Number(b.user_id);
-  if (!/^0x[0-9a-f]{40}$/.test(address)) return send(res, 400, { error: 'La dirección no es válida: empieza por 0x y tiene 42 caracteres.' });
-  if (address === BSC.wallet()) return send(res, 400, { error: 'Esa es la billetera de tu propio panel, no la de un revendedor.' });
-  const u = await C.users.findOne({ _id: uid, role: 'reseller' });
-  if (!u) return send(res, 404, { error: 'Elige un revendedor.' });
-  try { await C.wallets.insertOne({ _id: address, user_id: uid, created_at: now(), by: admin.username }); }
-  catch (e) {
-    if (!isDup(e)) throw e;
-    const w = await C.wallets.findOne({ _id: address });
-    return send(res, 409, { error: w && w.user_id === uid ? 'Esa billetera ya está registrada para este revendedor.' : 'Esa billetera ya pertenece a otro revendedor.' });
-  }
-  send(res, 201, { ok: true });
-});
-route('POST', '/api/admin/wallet-remove', 'admin', async (req, res, _u, b) => {
-  await C.wallets.deleteOne({ _id: String(b.address || '').toLowerCase() }); send(res, 200, { ok: true });
+  send(res, 200, { ok: true });
 });
 
 // ---------- Reportes de ganancia ----------

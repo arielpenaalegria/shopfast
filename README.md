@@ -170,4 +170,7 @@ El revendedor escribe cuánto va a enviar (ej. 5 USDT) y el panel le da un monto
 - El monto exacto es el que identifica al cliente; los centavos extra son únicos entre los pagos pendientes (casi siempre de 1 a 20 centavos). Se abona TODO lo que envía (5.08).
 - Cada pedido vence a las 24 h; cada revendedor puede tener 2 pagos esperando.
 - Pagos que llegan a tu billetera y no coinciden con nada (monto redondo, sin pedido, exchange con comisión…) NO se abonan: aparecen en *Saldo → Pagos USDT sin identificar* y te llega aviso por Telegram para resolverlos a mano.
-- Las billeteras registradas por el admin siguen abonando sin monto exacto (opcional; cuidado con billeteras de exchange, que las comparten miles de personas).
+- Ya no existen las «billeteras de confianza»: se quitaron del panel y del servidor. Nada se abona por la billetera de origen, solo por el monto exacto.
+
+## Seguridad de la cuenta de administrador
+En el panel del dueño hay una pestaña **Seguridad** (⚠️ mientras la verificación en dos pasos esté apagada) con el estado de protección, la activación de 2FA (Google Authenticator, Authy…), el cambio de contraseña y el cierre de todas las sesiones. Mientras no actives la 2FA aparece un aviso rojo en todas las pestañas. Si pierdes el celular y los códigos de recuperación: variable `RESET_2FA_FOR=tu_usuario` en Render y la borras después de entrar.
