@@ -1227,7 +1227,11 @@ async function adminView() {
             act('Rechazar', async () => {
               const m = prompt('Motivo (lo verá el revendedor):', ''); if (m === null) throw new Error('Cancelado');
               await api('POST', '/api/admin/topup-decide', { id: r.id, approve: false, note: m });
-            }, 'red')) : null);
+            }, 'red'),
+            act('⛔ Rechazar y bloquear', async () => {
+              if (!confirm(`¿Rechazar TODAS las solicitudes pendientes de ${r.username} y bloquear sus depósitos?\n\nNo podrá pedir más saldo hasta que tú se lo permitas (pestaña Revendedores).`)) throw new Error('Cancelado');
+              await api('POST', '/api/admin/topup-decide', { id: r.id, approve: false, block: true, note: 'Depósitos bloqueados' });
+            }, 'sec')) : null);
 };
     const reqBox = el('div'), reqCnt = el('div', { class: 'mut', style: 'margin:6px 0' });
     const drawReqs = list => {
@@ -1252,6 +1256,11 @@ async function adminView() {
       OWN && card('Datos de Saldo móvil', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores verán esto cuando elijan depositar por saldo móvil. Deja vacío para ocultar ese método.'), pmTA,
         el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { payment_mobile: pmTA.value }), ''))),
       card('Solicitudes de saldo', el('div', { class: 'mut' }, 'Los pagos USDT con monto exacto se abonan solos. Aquí revisas las transferencias CUP y saldo móvil.' + (OWN ? '' : ` Tu límite por aprobación: ${limLine(ME.perms, 'max_')}.`)),
+      el('div', { class: 'acts', style: 'margin:8px 0' }, act('🧹 Limpiar spam', async () => {
+        if (!confirm('Se rechazarán todos los pagos USDT que llevan más de 30 minutos esperando y son de cuentas que NUNCA han tenido un pago aprobado.\n\nNo toca a clientes que ya te han pagado antes. ¿Seguir?')) throw new Error('Cancelado');
+        const d = await api('POST', '/api/admin/topup-reject-spam', {});
+        alert(d.rejected ? `Se rechazaron ${d.rejected} solicitud${d.rejected === 1 ? '' : 'es'} de ${d.users} cuenta${d.users === 1 ? '' : 's'}.` : 'No había solicitudes para limpiar.');
+      }, 'sec')),
       reqFilters, reqCnt, reqBox),
       unmatched.length ? card('❔ Pagos USDT sin identificar', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Llegaron a tu billetera pero no coinciden con ningún pago pedido (monto distinto, sin solicitud…). Si el dueño es un cliente, pídele su comprobante y abónale a mano.'),
         el('div', { class: 'list' }, ...unmatched.slice(0, 15).map(x => el('div', {}, el('div', { class: 'l' }, el('div', {}, x.usdt.toFixed(4) + ' USDT'),
@@ -1355,13 +1364,14 @@ async function adminView() {
       return el('div', { class: 'rbox' + (r.active ? '' : ' off') },
         el('div', { class: 'rhead' }, avatar2(r.username, true),
           el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username), el('div', { class: 'stt ' + (r.active ? 'on' : 'off') }, r.active ? 'Activo' : 'Desactivado'),
-            el('div', { class: 'tags' },
+            el('div', { class: 'tags' }, r.deposit_block ? el('span', { class: 'tag off' }, '⛔ Depósitos bloqueados') : null,
               OWN ? el('span', { class: 'tag ' + (r.markup_manual ? 'manual' : 'auto') }, `Margen ${r.markup_pct}% · ${r.markup_manual ? '🔒 manual' : 'general'}`) : null,
               null))),
         el('div', { class: 'tiles tiles2' }, ...CURS.map(c => el('div', { class: 'tile' + ((b[c] || 0) > 0 ? '' : ' zero') }, el('span', {}, CURIC[c](), CURN[c]),
           el('b', {}, fmtC(b[c], c))))),
         el('div', { class: 'acts', style: 'margin-top:0' },
           can('ajustar') ? act('± Agregar / quitar saldo', () => adjust(r), '') : null,
+          act(r.deposit_block ? '✔ Permitir depósitos' : '⛔ Bloquear depósitos', () => api('POST', '/api/admin/user-update', { user_id: r.id, deposit_block: !r.deposit_block }), 'sec'),
           act(r.active ? '🚫 Desactivar' : '✔ Activar', () => api('POST', '/api/admin/user-update', { user_id: r.id, active: !r.active }), r.active ? 'sec' : 'grn')),
         OWN ? el('details', { class: 'regd', style: 'margin:10px 0 0' }, el('summary', {}, el('b', {}, 'Más opciones'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
           el('div', { class: 'acts', style: 'margin:0 0 10px' },
