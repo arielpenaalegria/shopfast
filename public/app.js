@@ -201,6 +201,7 @@ $('lb').onclick = async () => {
 lc.addEventListener('keydown', e => e.key === 'Enter' && $('lb').click());
 $('lp').addEventListener('keydown', e => e.key === 'Enter' && $('lb').click());
 $('lu').placeholder = 'Correo o usuario';
+$('login').querySelector('h2').after(el('div', { class: 'sub' }, 'Entra para recargar, ver tu saldo y tu historial.'));
 // ¿Olvidaste tu contraseña? (revendedores: código por Telegram, o aviso al administrador)
 {
   const fu = el('input', { placeholder: 'Tu correo o usuario', autocomplete: 'username' });
@@ -228,6 +229,24 @@ $('lu').placeholder = 'Correo o usuario';
   };
   $('login').append(el('button', { class: 'ghost', style: 'margin-top:12px', onclick: () => form.classList.toggle('hidden') }, '¿Olvidaste tu contraseña?'), form);
 }
+// Inicio de sesión con Google (si el dueño puso GOOGLE_CLIENT_ID)
+api('GET', '/api/public-config').then(cfg => {
+  if (!cfg.google_client_id) return;
+  const gbox = el('div', { class: 'gbox' }), gm = el('div');
+  const sep = el('div', { class: 'sep' }, el('span', {}, 'o con tu correo'));
+  $('lu').before(gbox, gm, sep);
+  const sc = document.createElement('script'); sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true;
+  sc.onload = () => {
+    try {
+      google.accounts.id.initialize({ client_id: cfg.google_client_id, ux_mode: 'popup', callback: async r => {
+        try { await api('POST', '/api/google', { credential: r.credential }); gm.replaceChildren(); boot(); } catch (e) { msg(gm, e.message, 'err'); }
+      } });
+      google.accounts.id.renderButton(gbox, { theme: 'filled_black', size: 'large', shape: 'pill', text: 'continue_with', locale: 'es', width: Math.min(320, ($('login').clientWidth || 340) - 44) });
+    } catch { gbox.remove(); sep.remove(); }
+  };
+  sc.onerror = () => { gbox.remove(); sep.remove(); };
+  document.head.append(sc);
+}).catch(() => {});
 // Registro de revendedores (si el admin lo tiene abierto)
 api('GET', '/api/public-config').then(cfg => {
   if (cfg.registration === 'off') return;

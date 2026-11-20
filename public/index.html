@@ -171,6 +171,22 @@ details.newrev[open]>summary .chev{transform:rotate(90deg)}
 @media (min-width:560px){.modal{align-items:center;padding:16px}.sheet{border-radius:22px}}
 @media (min-width:720px){.rgrid{grid-template-columns:1fr 1fr}}
 @media (max-width:480px){.tabs{margin:0 -10px 12px;padding:8px 10px}.tile b{font-size:.95rem}}
+
+/* ===== Diseño v3 ===== */
+body{background:radial-gradient(900px 500px at 50% -120px,#ff7a0026,transparent 70%),radial-gradient(600px 400px at 100% 100%,#ff4d0014,transparent 70%),var(--bg);background-attachment:fixed}
+header{backdrop-filter:blur(14px);background:#0b0b0dcc;position:sticky;top:0;z-index:20}
+.login{background:linear-gradient(180deg,#1b1b21,#141418);border:1px solid #ffffff12;border-radius:26px;box-shadow:0 30px 80px -30px #000,0 0 0 1px #ff7a0010,0 -1px 0 #ff7a0033 inset}
+.login img{width:112px;height:112px;border-radius:50%;object-fit:cover;box-shadow:0 0 0 3px #ff7a00,0 0 0 8px #ff7a0022,0 18px 44px -14px #ff7a00}
+.login h2{font-size:1.5rem;margin:8px 0 2px}
+.login .sub{color:var(--mut);font-size:.92rem;margin-bottom:18px}
+.login input{padding:14px 16px;border-radius:14px;font-size:1rem}
+.login #lb{padding:14px;border-radius:14px;font-size:1rem;font-weight:800;letter-spacing:.2px}
+.gbox{display:flex;justify-content:center;min-height:44px;margin-bottom:4px}
+.sep{display:flex;align-items:center;gap:10px;color:var(--mut);font-size:.82rem;margin:14px 0}
+.sep:before,.sep:after{content:"";flex:1;height:1px;background:var(--line)}
+.card{border:1px solid #ffffff0f;box-shadow:0 14px 36px -24px #000}
+.tabs button{transition:transform .15s,background .15s}.tabs button:active{transform:scale(.96)}
+button:not(.ghost):active{transform:scale(.98)}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b>Shop Fast<small>Panel de revendedores</small></b></div><span id="who"></span></header>
 <main>
