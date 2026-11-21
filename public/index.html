@@ -488,6 +488,31 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.8}
 .carttot{display:grid;gap:6px;margin-bottom:10px}
 .carttot>div{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;border-radius:14px;background:#120e2b;border:1.5px solid #3b2f78}.carttot>div.low{border-color:#ef4444}.carttot b{color:#ffb020}
 .sheet.cartsheet .acts{display:grid;grid-template-columns:1fr;gap:8px}
+/* ===== Más compacto en móvil (hasta 520px) ===== */
+@media (max-width:520px){
+header{margin:8px 8px 6px;padding:8px 8px;gap:6px;border-radius:20px}
+.brand{gap:7px}.brand img{width:38px;height:38px;border-radius:12px}
+.brand b{white-space:normal!important;line-height:1.05;font-size:clamp(.82rem,4.2vw,1.05rem)!important;overflow-wrap:anywhere}
+.bn::before{display:none}
+#who{border-radius:16px;padding:1px 2px}
+#who .acct{font-size:0!important;padding:5px 7px!important;gap:0}#who .acct span{font-size:1.05rem!important}
+#who a{font-size:0!important;padding:5px 7px!important;gap:0}#who a:after{width:17px;height:17px}
+main{padding:8px 8px 40px}
+.card:not(.login){padding:11px!important;border-radius:16px}
+.ann{padding:8px 10px;gap:8px;font-size:.82rem}.ann button,.ann a{padding:6px 10px!important;font-size:.8rem!important}
+.heroh>span{font-size:1.05rem!important;gap:6px}.heroh>span img{width:28px;height:28px}.heroh button{padding:7px 11px!important;font-size:.8rem!important;gap:5px}
+.bal3{gap:6px}.bal3>div{padding:8px 3px 7px;border-radius:15px;border-width:1.5px}
+.bal3 span{font-size:.68rem!important;gap:3px}.bal3 span .ic{font-size:.95rem!important}.bal3 span .dl{width:17px;height:17px;font-size:.62rem}
+.bal3 b{font-size:1.25rem!important;margin:3px 0 5px}.bal3 small{font-size:.66rem!important;padding:3px 9px}
+.tabs4{gap:4px;margin:2px 0 10px}.tabs4 button{padding:6px 2px!important;min-height:52px!important;font-size:.68rem!important;border-radius:14px!important}.tabs4 button .ti{font-size:1.1rem!important}
+.seg button{min-height:66px!important;padding:7px 3px!important}.seg .si{font-size:1.05rem!important}.seg .sl{font-size:.64rem!important}.seg small{font-size:.6rem!important}
+.chip{font-size:.8rem!important;padding:7px 12px!important}
+.navgrid button{padding:12px 6px!important;font-size:.88rem!important}.navgrid button .ti{font-size:1.25rem!important}
+h2,.card h2,.cardh h2{font-size:1.05rem!important}
+label,.mut{font-size:.8rem}
+input,select,textarea{font-size:.92rem;min-height:40px;padding:8px 10px}
+button{font-size:.88rem}
+}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b><span class="bn">Shop <em>Fast</em></span></b></div><span id="who"></span></header>
 <main>
