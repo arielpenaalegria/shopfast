@@ -90,6 +90,7 @@ const SETTINGS = {
   require_2fa: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // exigir 2FA a sub-admins
   auto_backup: { def: 1, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // respaldo semanal a Telegram
   maintenance: { def: 0, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // modo mantenimiento: pausa las recargas
+  whatsapp_url: { def: '', check: v => v === '' || (String(v).length <= 300 && /^https:\/\/(wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com|(www\.)?whatsapp\.com)\/[^\s<>"']*$/i.test(String(v).trim())), cast: v => String(v).trim() }, // botón flotante de WhatsApp
   maintenance_msg: { def: '', check: v => String(v).length <= 300, cast: v => String(v).trim() },
   rate_stale_days: { def: 3, check: v => Number(v) >= 0 && Number(v) <= 60, cast: Number }, // avisar si las tasas CUP llevan N días sin tocarse (0 = no avisar)
   usdt_autoscan: { def: 1, check: v => [0, 1, '0', '1', true, false].includes(v), cast: v => (v === 1 || v === '1' || v === true || v === 'true') ? 1 : 0 }, // abonar solos los USDT que lleguen de billeteras de confianza (sin hash)
@@ -213,6 +214,7 @@ route('POST', '/api/login', null, async (req, res, _u, body) => {
     return send(res, 401, { error: 'Usuario o contraseña incorrectos' });
   }
   if (!u.active) return send(res, 403, { error: u.pending_approval ? 'Tu cuenta está pendiente de aprobación por el administrador. Intenta más tarde o escríbele.' : 'Tu cuenta está desactivada. Contacta al administrador.' });
+  if (u.parent_id) { const par = await C.users.findOne({ _id: u.parent_id }); if (!par || !par.active) return send(res, 403, { error: 'La cuenta de tu revendedor está desactivada. Habla con él.' }); }
   let how = '';
   if (u.totp_on) {
     const code = String(body.code || '').trim();
@@ -378,7 +380,7 @@ route('GET', '/api/me', 'any', async (req, res, u) => {
 });
 
 // Registro público de revendedores (correo + contraseña). Según el ajuste: cerrado, con aprobación del admin o abierto.
-route('GET', '/api/public-config', null, async (req, res) => send(res, 200, { registration: (await getSettings()).registration, google_client_id: GOOGLE_ID || null }));
+route('GET', '/api/public-config', null, async (req, res) => { const st = await getSettings(); send(res, 200, { registration: st.registration, google_client_id: GOOGLE_ID || null, whatsapp_url: st.whatsapp_url || null }); });
 const regHits = new Map();
 route('POST', '/api/register', null, async (req, res, _u, b) => {
   const st = await getSettings();
@@ -487,6 +489,7 @@ route('POST', '/api/validate', 'reseller', async (req, res, u, body) => {
 
 route('POST', '/api/orders', 'reseller', async (req, res, u, body) => {
   { const st0 = await getSettings(); if (st0.maintenance) return send(res, 503, { error: maintMsg(st0) }); }
+  if (u.bal_locked) return send(res, 403, { error: 'Tu saldo está bloqueado por tu revendedor. Habla con él.' });
   const p = (await availableProducts(Number(body.product_id)))[0];
   if (!p) return send(res, 400, { error: 'Producto no disponible ahora' });
   const b = buildPayload(p, body);
@@ -675,7 +678,7 @@ const REASONS = {
 };
 const OSTAT = { unknown: ['unknown'], active: ['pending', 'processing'], completed: ['completed'], failed: ['failed'] };
 const OSTAT_ES = { completed: 'Completada', failed: 'Fallida', pending: 'En proceso', processing: 'En proceso', unknown: 'Verificando' };
-const LTYPE_ES = { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' };
+const LTYPE_ES = { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso', assist: 'Asistente' };
 async function myOrders(u, sp, cap) {
   const q = (sp.get('q') || '').trim().toLowerCase(), f = { user_id: u.id }, lim = Math.min(Number(sp.get('limit')) || 100, cap);
   if (OSTAT[sp.get('status')]) f.status = { $in: OSTAT[sp.get('status')] };
@@ -705,10 +708,89 @@ route('GET', '/api/orders.csv', 'reseller', async (req, res, u) => sendCsv(res, 
 route('GET', '/api/ledger.csv', 'reseller', async (req, res, u) => sendCsv(res, 'mis-movimientos', 'Fecha (UTC),Tipo,Monto,Moneda,Nota',
   (await myLedger(u, new URL(req.url, 'http://x').searchParams, 5000)).map(l => [l.created_at, LTYPE_ES[l.type] || l.type, l.amount, l.currency === 'usdt' ? 'USDT' : l.currency === 'transfer' ? 'CUP transferencia' : 'CUP saldo móvil', l.note])));
 
+// ---------- Cuentas asistente ----------
+// El dueño las crea y las vincula a un revendedor. Compran al mismo precio que su revendedor, no piden saldo:
+// el revendedor les pasa (o les quita) saldo de SU crédito, y puede bloquear su saldo.
+const assistantOf = async (u, id) => (u.parent_id ? null : C.users.findOne({ _id: Number(id), parent_id: u.id, role: 'reseller' }));
+route('GET', '/api/assistants', 'reseller', async (req, res, u) => {
+  if (u.parent_id) return send(res, 200, []);
+  const list = await C.users.find({ parent_id: u.id, role: 'reseller' }).sort({ _id: 1 }).toArray(), P0 = periodStarts();
+  const out = [];
+  for (const a of list) {
+    const os = await C.orders.find({ user_id: a._id, status: 'completed', created_at: { $gte: P0.today } }).toArray(), t = { count: 0, usdt: 0, transfer: 0, mobile: 0 };
+    for (const o of os) { t.count++; t[curOf(o.currency)] += o.price_cents / 100; }
+    out.push({ id: a._id, username: a.username, active: !!a.active, bal_locked: !!a.bal_locked, balances: balancesOf(a), today: t });
+  }
+  send(res, 200, out);
+});
+route('POST', '/api/assistants/move', 'reseller', async (req, res, u, b) => {
+  const a = await assistantOf(u, b.assistant_id);
+  if (!a) return send(res, 404, { error: 'Esa cuenta no es asistente tuya' });
+  const cur = curOf(b.currency), cents = toCents(b.amount);
+  if (!Number.isFinite(cents) || cents === 0 || Math.abs(cents) > (cur === 'usdt' ? 10000000 : 1000000000)) return send(res, 400, { error: 'Monto inválido' });
+  if (cur !== 'usdt' && cents % 100) return send(res, 400, { error: 'El monto en CUP debe ser entero' });
+  const give = cents > 0, amt = Math.abs(cents);
+  try {
+    await withTx(async s => {
+      if (!await takeBalance(s, give ? u.id : a._id, amt, cur)) throw httpErr(402, give ? `No tienes suficiente saldo ${CUR_L[cur]}.` : `${a.username} no tiene ${fmtCur(amt, cur)} en ${CUR_L[cur]}.`);
+      await addBalance(s, give ? a._id : u.id, amt, cur);
+      await ledger(s, u.id, give ? -amt : amt, 'assist', String(a._id), give ? `Enviado a ${a.username}` : `Quitado a ${a.username}`, cur);
+      await ledger(s, a._id, give ? amt : -amt, 'assist', String(u.id), give ? `Recibido de ${u.username}` : `Retirado por ${u.username}`, cur);
+    });
+  } catch (e) { return send(res, e.http || 500, { error: e.http ? e.message : 'Error interno' }); }
+  send(res, 200, { ok: true });
+});
+route('POST', '/api/assistants/lock', 'reseller', async (req, res, u, b) => {
+  const a = await assistantOf(u, b.assistant_id);
+  if (!a) return send(res, 404, { error: 'Esa cuenta no es asistente tuya' });
+  await C.users.updateOne({ _id: a._id }, { $set: { bal_locked: b.locked ? 1 : 0 } });
+  send(res, 200, { ok: true });
+});
+
+// ---------- Mis ventas (hora de Cuba) ----------
+const TZ = process.env.TZ_STATS || 'America/Havana';
+/** Medianoche de hoy en la zona de Cuba, como Date (UTC). */
+function zoneMidnight(d = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: TZ, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(d).map(x => [x.type, x.value]));
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second), off = asUtc - Math.floor(d.getTime() / 1000) * 1000;
+  return { ms: Date.UTC(+p.year, +p.month - 1, +p.day) - off, y: +p.year, m: +p.month, d: +p.day, wd: new Date(Date.UTC(+p.year, +p.month - 1, +p.day)).getUTCDay() };
+}
+function periodStarts() {
+  const z = zoneMidnight(), day = 864e5, today = new Date(z.ms);
+  return { today, yesterday: new Date(z.ms - day), week: new Date(z.ms - ((z.wd + 6) % 7) * day), month: { today: new Date(z.ms - (z.d - 1) * day) } };
+}
+async function salesOf(uids) {
+  const P = periodStarts(), mk = () => ({ count: 0, usdt: 0, transfer: 0, mobile: 0 });
+  const out = { today: mk(), yesterday: mk(), week: mk(), month: mk(), total: mk() };
+  const os = await C.orders.find({ user_id: { $in: uids }, status: 'completed' }).toArray();
+  for (const o of os) {
+    const t = new Date(o.created_at).getTime(), c = curOf(o.currency), v = o.price_cents;
+    const add = k => { out[k].count++; out[k][c] += v; };
+    add('total');
+    if (t >= P.today.getTime()) add('today'); else if (t >= P.yesterday.getTime()) add('yesterday');
+    if (t >= P.week.getTime()) add('week');
+    if (t >= P.month.today.getTime()) add('month');
+  }
+  for (const k of Object.keys(out)) for (const c of ['usdt', 'transfer', 'mobile']) out[k][c] /= 100;
+  return out;
+}
+route('GET', '/api/stats', 'reseller', async (req, res, u) => {
+  const d = await C.users.findOne({ _id: u.id });
+  const mine = await salesOf([u.id]);
+  let team = null;
+  if (!u.parent_id) {
+    const as = await C.users.find({ parent_id: u.id, role: 'reseller' }).toArray();
+    if (as.length) team = { sales: await salesOf(as.map(a => a._id)), count: as.length };
+  }
+  send(res, 200, { mine, team, since: d && d.created_at ? fmt(d.created_at) : null });
+});
+
 // --- Admin ---
 route('GET', '/api/admin/users', 'staff', async (req, res) =>
-  send(res, 200, (await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray())
-    .map(u => ({ id: u._id, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, markup_manual: !!u.markup_manual, deposit_block: !!u.deposit_block, trust_wallets: !!u.trust_wallets, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))));
+  { const all = await C.users.find({ role: 'reseller' }).sort({ _id: -1 }).toArray(), nm = new Map(all.map(x => [x._id, x.username])), kids = new Map();
+  for (const x of all) if (x.parent_id) kids.set(x.parent_id, (kids.get(x.parent_id) || 0) + 1);
+  return send(res, 200, all
+    .map(u => ({ id: u._id, parent_id: u.parent_id || null, parent: u.parent_id ? nm.get(u.parent_id) || '#' + u.parent_id : null, assistants: kids.get(u._id) || 0, bal_locked: !!u.bal_locked, username: u.username, balance: (u.balance_cents || 0) / 100, balances: balancesOf(u), markup_pct: u.markup_pct, markup_manual: !!u.markup_manual, deposit_block: !!u.deposit_block, trust_wallets: !!u.trust_wallets, min_margin: (u.min_margin_cents || 0) / 100, telegram: !!u.telegram_chat_id, active: u.active, pending: !!u.pending_approval, self_registered: !!u.self_registered, created_at: fmt(u.created_at) }))); });
 
 route('POST', '/api/admin/users', 'staff', async (req, res, _u, b) => {
   const username = String(b.username || '').trim(), pw = String(b.password || '');
@@ -719,6 +801,12 @@ route('POST', '/api/admin/users', 'staff', async (req, res, _u, b) => {
   if (!(markup >= 0 && markup <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
   // Si el dueño escribe un margen distinto al general, queda como MANUAL (el cambio general no lo toca). Igual al general = automático.
   const extra = { markup_manual: markup !== def ? 1 : 0, trust_wallets: 0 };
+  if (b.parent_id) { // cuenta asistente de un revendedor (solo el dueño)
+    if (_u.role !== 'admin') return send(res, 403, { error: 'Solo el dueño crea cuentas asistente.' });
+    const par = await C.users.findOne({ _id: Number(b.parent_id), role: 'reseller' });
+    if (!par || par.parent_id) return send(res, 400, { error: 'Elige un revendedor válido (no puede ser otro asistente).' });
+    extra.parent_id = par._id;
+  }
   try { await createUser(username, A.hashPassword(pw), 'reseller', markup, extra); }
   catch (e) { if (isDup(e)) return send(res, 409, { error: 'Ese usuario ya existe' }); throw e; }
   send(res, 201, { ok: true });
@@ -771,6 +859,7 @@ route('POST', '/api/admin/balance', 'staff', async (req, res, admin, b) => {
 route('POST', '/api/admin/user-delete', 'staff', async (req, res, _u, b) => {
   const id = Number(b.user_id), u = await C.users.findOne({ _id: id, role: 'reseller' });
   if (!u) return send(res, 404, { error: 'Usuario no encontrado' });
+  if (await C.users.countDocuments({ parent_id: id })) return send(res, 409, { error: 'Esta cuenta tiene asistentes: desvincúlalos primero.' });
   if (u.balance_cents || u.bal_transfer_cents || u.bal_mobile_cents || await C.orders.countDocuments({ user_id: id }) || await C.ledger.countDocuments({ user_id: id }))
     return send(res, 409, { error: 'Esta cuenta tiene saldo o movimientos: desactívala en vez de borrarla.' });
   await C.users.deleteOne({ _id: id });
@@ -778,11 +867,20 @@ route('POST', '/api/admin/user-delete', 'staff', async (req, res, _u, b) => {
 });
 
 route('POST', '/api/admin/user-update', 'staff', async (req, res, _u, b) => {
-  if (_u.role === 'subadmin' && (b.markup_pct !== undefined || b.markup_auto !== undefined || b.trust_wallets !== undefined || b.min_margin !== undefined || b.password)) return send(res, 403, { error: 'Solo el dueño puede cambiar margen, billeteras de confianza, ganancia mínima o contraseñas.' });
+  if (_u.role === 'subadmin' && (b.parent_id !== undefined || b.markup_pct !== undefined || b.markup_auto !== undefined || b.trust_wallets !== undefined || b.min_margin !== undefined || b.password)) return send(res, 403, { error: 'Solo el dueño puede cambiar margen, billeteras de confianza, ganancia mínima o contraseñas.' });
   const uid = Number(b.user_id), f = { _id: uid, role: 'reseller' };
   const set = {};
   if (b.active !== undefined) { set.active = b.active ? 1 : 0; if (b.active) set.pending_approval = 0; }
   if (b.deposit_block !== undefined) set.deposit_block = b.deposit_block ? 1 : 0;
+  if (b.parent_id !== undefined) { // vincular como asistente (o 0 = volver a ser revendedor normal)
+    const pid = Number(b.parent_id) || 0;
+    if (pid) {
+      const par = await C.users.findOne({ _id: pid, role: 'reseller' });
+      if (!par || par.parent_id || pid === uid) return send(res, 400, { error: 'Elige un revendedor válido (no puede ser otro asistente ni la misma cuenta).' });
+      if (await C.users.countDocuments({ parent_id: uid })) return send(res, 400, { error: 'Esta cuenta tiene sus propios asistentes: no puede ser asistente.' });
+      set.parent_id = pid;
+    } else { set.parent_id = null; set.bal_locked = 0; }
+  }
   if (b.markup_pct !== undefined) {
     const m = Number(b.markup_pct);
     if (!(m >= 0 && m <= 100)) return send(res, 400, { error: 'Margen entre 0 y 100' });
@@ -974,11 +1072,13 @@ route('POST', '/api/telegram-unlink', 'any', async (req, res, u) => {
   await C.users.updateOne({ _id: u.id }, { $set: { telegram_chat_id: null } }); send(res, 200, { ok: true });
 });
 route('GET', '/api/me-extra', 'any', async (req, res, u) => {
-  const d = await C.users.findOne({ _id: u.id });
-  send(res, 200, { telegram: TG.enabled(), telegram_linked: !!d.telegram_chat_id, store_name: d.store_name || '', store_logo: d.store_logo || '' });
+  const d = await C.users.findOne({ _id: u.id }), sd = d.parent_id ? (await C.users.findOne({ _id: d.parent_id })) || d : d;
+  send(res, 200, { telegram: TG.enabled(), telegram_linked: !!d.telegram_chat_id, store_name: sd.store_name || '', store_logo: sd.store_logo || '',
+    assistant_of: d.parent_id ? sd.username : null, bal_locked: !!d.bal_locked, assistants: d.role === 'reseller' && !d.parent_id ? await C.users.countDocuments({ parent_id: d._id }) : 0 });
 });
 // Tienda del revendedor: nombre e icono que salen en sus comprobantes
 route('POST', '/api/store', 'reseller', async (req, res, u, b) => {
+  if (u.parent_id) return send(res, 403, { error: 'El nombre de la tienda lo pone tu revendedor.' });
   const name = String(b.name || '').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 40);
   const logo = b.logo ? String(b.logo) : '';
   if (logo && (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(logo) || logo.length > 150000)) return send(res, 400, { error: 'Imagen no válida' });
@@ -1023,6 +1123,7 @@ async function depositSpamCheck(u, req) {
   return null;
 }
 route('POST', '/api/topup-requests', 'reseller', async (req, res, u, b) => {
+  if (u.parent_id) return send(res, 403, { error: 'Las cuentas asistente no piden saldo: te lo pasa tu revendedor.' });
   { const spam = await depositSpamCheck(u, req); if (spam) return send(res, 429, { error: spam }); }
   const method = ['usdt', 'transfer', 'mobile'].includes(b.method) ? b.method : 'usdt';
   { const st0 = await getSettings(); if (st0['pay_off_' + method]) return send(res, 400, { error: 'Los pagos por ' + { usdt: 'USDT', transfer: 'transferencia', mobile: 'saldo móvil' }[method] + ' están suspendidos por ahora. Usa otro método o inténtalo más tarde.' }); }
@@ -1773,6 +1874,11 @@ const server = http.createServer(async (req, res) => {
         if (user.role === 'subadmin' && !user.totp_on && !GATE_OK.has(ap) && (await getSettings()).require_2fa)
           return send(res, 403, { error: 'El dueño exige verificación en dos pasos. Actívala en Mi cuenta.' });
         if (user.role === 'subadmin') user.perms = normPerms(user.perms || {});
+        if (user.parent_id) { // cuenta asistente: compra con el margen de su revendedor y se apaga si el revendedor está desactivado
+          const par = await C.users.findOne({ _id: user.parent_id, role: 'reseller' });
+          if (!par || !par.active) return send(res, 403, { error: 'La cuenta de tu revendedor está desactivada. Habla con él.' });
+          user.markup_pct = par.markup_pct || 0; user.min_margin_cents = par.min_margin_cents || 0; user.parent_name = par.username;
+        }
         let ok = true;
         if (r.role === 'staff') ok = user.role === 'admin' || (user.role === 'subadmin' && !!(user.perms && user.perms[STAFF_PERM[req.method + ' ' + ap]]));
         else if (r.role !== 'any') ok = user.role === r.role;
