@@ -246,6 +246,18 @@ async function gsiButton(box, clientId, onCred, text) {
   google.accounts.id.initialize({ client_id: clientId, ux_mode: 'popup', callback: r => onCred(r.credential) });
   google.accounts.id.renderButton(box, { theme: 'filled_black', size: 'large', shape: 'pill', text: text || 'continue_with', locale: 'es', width: Math.min(320, (box.parentElement && box.parentElement.clientWidth || 340) - 44) });
 }
+/** Botón flotante de WhatsApp: el dueño pone el enlace en Ajustes. Si existe public/whatsapp.png se usa como icono. */
+function paintWhatsApp(url) {
+  let a = document.getElementById('wafab');
+  if (!url) { if (a) a.remove(); return; }
+  if (!a) {
+    const img = el('img', { src: 'whatsapp.png', alt: '' }); img.onerror = () => { img.replaceWith(el('span', { class: 'waic', 'aria-hidden': 'true' }, '💬')); };
+    a = el('a', { id: 'wafab', class: 'wafab', target: '_blank', rel: 'noopener noreferrer', 'aria-label': 'Escríbenos por WhatsApp', title: 'WhatsApp' }, img, el('span', { class: 'wat' }, 'WhatsApp'));
+    document.body.append(a);
+  }
+  a.href = url;
+}
+api('GET', '/api/public-config').then(cfg => paintWhatsApp(cfg.whatsapp_url)).catch(() => {});
 // Inicio de sesión con Google (si el dueño puso GOOGLE_CLIENT_ID)
 api('GET', '/api/public-config').then(cfg => {
   if (!cfg.google_client_id) return;
@@ -754,7 +766,10 @@ async function resellerView() {
         el('div', { class: 'acts' }, sendBtn), reqBox));
   }
 
-  const tabs = [['recargar', '⚡', 'Recargar'], ['historial', '🧾', 'Historial'], ['saldo', '💰', 'Saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', '👤', 'Cuenta']];
+  const ASIS = !!extra.assistant_of, PAR = !ASIS && extra.assistants > 0;
+  const tabs = [['recargar', '⚡', 'Recargar'], ['historial', '🧾', 'Historial'], ['ventas', '📈', 'Ventas'],
+    ASIS ? null : ['saldo', '💰', 'Saldo' + (reqs.some(r => r.status === 'pending') ? ' •' : '')], ['cuenta', '👤', 'Cuenta']].filter(Boolean);
+  if (!tabs.some(t => t[0] === rtab)) rtab = 'recargar';
   const CUR_NAME = { usdt: 'USDT', transfer: 'Transf.', mobile: 'Saldo móvil' };
   const CUR_IC = { usdt: el('i', { class: 'dl' }, '$'), transfer: el('i', { class: 'ic' }, '🏛️'), mobile: el('i', { class: 'ic' }, '📱') };
   put(out,
@@ -769,7 +784,8 @@ async function resellerView() {
       if (!long) return el('div', { class: 'ann static' }, icon('shield', 'shield'), el('span', {}, me.announcement));
       return el('details', { class: 'ann' }, el('summary', {}, icon('shield', 'shield'), el('span', {}, lines[0]), el('em', {}, 'Ver todo')), el('div', { class: 'annb' }, me.announcement));
     })() : null,
-    el('div', { class: 'card hero' }, el('div', { class: 'heroh' }, el('span', {}, icon('wallet'), 'Mis saldos'), el('button', { onclick: () => { rtab = 'saldo'; resellerView(); } }, icon('plane'), 'Pedir saldo')),
+    el('div', { class: 'card hero' }, el('div', { class: 'heroh' }, el('span', {}, icon('wallet'), 'Mis saldos'), ASIS ? el('span', { class: 'asistag' }, '🤝 Asistente de ' + extra.assistant_of) : el('button', { onclick: () => { rtab = 'saldo'; resellerView(); } }, icon('plane'), 'Pedir saldo')),
+      ASIS && extra.bal_locked ? el('div', { class: 'msg err', style: 'margin:0 0 10px' }, '🔒 Tu saldo está bloqueado por tu revendedor. No puedes hacer recargas hasta que lo desbloquee.') : null,
       el('div', { class: 'bal3' }, ...CURS.map(c => el('div', { class: 't-' + c }, el('span', {}, CUR_IC[c].cloneNode(true), CUR_NAME[c]),
         el('b', {}, c === 'usdt' ? Number(bal[c]).toFixed(2) : Math.round(bal[c]).toLocaleString('es')), el('small', {}, c === 'usdt' ? 'USDT' : 'CUP'))))),
     el('div', { class: 'tabs tabs4' }, ...tabs.map(([k, ic, l]) => el('button', { class: k === rtab ? 'on' : '', onclick: () => { rtab = k; resellerView(); } }, el('span', { class: 'ti' }, ic), l))));
@@ -820,7 +836,7 @@ async function resellerView() {
   }
   if (rtab === 'historial') {
     const isO = hsub === 'recargas', F = isO ? myOrdF : myLedF, base = isO ? '/api/orders' : '/api/ledger';
-    const LT = { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso' };
+    const LT = { topup: 'Recarga de saldo', adjust: 'Ajuste', order: 'Compra', refund: 'Reembolso', assist: 'Asistente' };
     const listBox = el('div'), cnt = el('div', { class: 'mut', style: 'margin:6px 0' });
     const csv = el('a', { href: base + '.csv?' + qs(F), download: '' }, el('button', { class: 'sec sm' }, '⬇ Descargar CSV'));
     const rowO = o => el('div', {},
@@ -842,9 +858,52 @@ async function resellerView() {
       el('div', { class: 'chips', style: 'margin-bottom:12px' }, ...[['recargas', 'Mis recargas'], ['mov', 'Movimientos de saldo']].map(([k, l]) => el('button', { class: 'chip' + (hsub === k ? ' on' : ''), onclick: () => { hsub = k; resellerView(); } }, l))),
       card(isO ? 'Mis recargas' : 'Movimientos de saldo',
         filterBar(F, isO ? [['', 'Todas'], ['completed', 'Completadas'], ['active', 'En proceso'], ['unknown', 'Verificando'], ['failed', 'Fallidas']]
-          : [['', 'Todos'], ['topup', 'Recargas de saldo'], ['order', 'Compras'], ['refund', 'Reembolsos'], ['adjust', 'Ajustes']], reload, isO ? null : [['', 'Todas las monedas'], ['usdt', 'USDT'], ['transfer', 'CUP transf.'], ['mobile', 'CUP saldo']]),
+          : [['', 'Todos'], ['topup', 'Recargas de saldo'], ['order', 'Compras'], ['refund', 'Reembolsos'], ['adjust', 'Ajustes'], ['assist', 'Asistentes']], reload, isO ? null : [['', 'Todas las monedas'], ['usdt', 'USDT'], ['transfer', 'CUP transf.'], ['mobile', 'CUP saldo']]),
         cnt, listBox, el('div', { class: 'acts' }, csv)));
     if (hasF(F)) reload(); else draw(isO ? orders : led);
+  }
+  if (rtab === 'ventas') {
+    const sbox = el('div', {}, el('div', { class: 'mut' }, 'Cargando…'));
+    put(out, box, card('Mis ventas', sbox));
+    api('GET', '/api/stats').then(d => {
+      const amt = x => CURS.filter(c => x[c] > 0).map(c => money(x[c], c)).join(' + ') || '—';
+      const grid = S => el('div', { class: 'sgrid' }, ...[['today', 'Hoy'], ['yesterday', 'Ayer'], ['week', 'Esta semana'], ['month', 'Este mes']].map(([k, l]) =>
+        el('div', { class: 'scell' }, el('span', {}, l), el('b', {}, String(S[k].count)), el('small', {}, S[k].count === 1 ? 'recarga' : 'recargas'), el('em', {}, amt(S[k])))));
+      const total = (S, t) => el('div', { class: 'stotal' }, el('span', {}, t), el('b', {}, amt(S.total)), el('small', {}, `${S.total.count} recarga${S.total.count === 1 ? '' : 's'} completada${S.total.count === 1 ? '' : 's'}`));
+      sbox.replaceChildren(grid(d.mine), total(d.mine, '💳 Crédito consumido desde que usas la página' + (d.since ? ` (${String(d.since).slice(0, 10)})` : '')),
+        d.team ? el('div', { style: 'margin-top:16px' }, el('h2', {}, `🤝 Tus asistentes (${d.team.count})`), grid(d.team.sales), total(d.team.sales, '💳 Consumido por tus asistentes en total')) : null,
+        el('div', { class: 'mut', style: 'margin-top:10px' }, 'Cuenta solo las recargas completadas, con el precio que pagaste. Días y semanas en hora de Cuba (la semana empieza el lunes).'));
+    }).catch(e => msg(sbox, e.message, 'err'));
+  }
+  if (rtab === 'saldo' && PAR) {
+    const abox = el('div', {}, el('div', { class: 'mut' }, 'Cargando…'));
+    const reloadA = () => api('GET', '/api/assistants').then(list => {
+      abox.replaceChildren(el('div', { class: 'mut', style: 'margin-bottom:10px' }, 'Pásales saldo de tu crédito o quítaselo. Compran al mismo precio que tú y no pueden pedir saldo por su cuenta.'),
+        ...list.map(a => {
+          const cur = el('select', { 'aria-label': 'Moneda' }, ...CURS.map(c => el('option', { value: c }, CUR_ICON[c] + ' ' + CUR_LONG[c])));
+          const amt = el('input', { type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: 'Monto', 'aria-label': 'Monto' }), am = el('div');
+          const move = sign => async e => {
+            const v = Number(String(amt.value).replace(',', '.')), c = cur.value;
+            if (!(v > 0)) return msg(am, 'Escribe un monto mayor que 0.', 'err');
+            if (c !== 'usdt' && !Number.isInteger(v)) return msg(am, 'En CUP el monto debe ser entero.', 'err');
+            if (!confirm(`¿${sign > 0 ? 'Pasar' : 'Quitar'} ${money(v, c)} ${sign > 0 ? 'a' : 'de'} ${a.username}?`)) return;
+            e.target.disabled = true;
+            try { await api('POST', '/api/assistants/move', { assistant_id: a.id, currency: c, amount: String(sign * v) }); flash = [`Listo: ${sign > 0 ? 'pasaste' : 'quitaste'} ${money(v, c)} ${sign > 0 ? 'a' : 'de'} ${a.username}.`, 'ok']; resellerView(); }
+            catch (err) { msg(am, err.message, 'err'); e.target.disabled = false; }
+          };
+          return el('div', { class: 'rbox asbox' + (a.bal_locked ? ' off' : '') },
+            el('div', { class: 'rhead' }, avatar2(a.username, true), el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, a.username),
+              el('div', { class: 'stt ' + (a.bal_locked ? 'off' : 'on') }, a.bal_locked ? '🔒 Saldo bloqueado' : 'Activo'),
+              el('div', { class: 'mut' }, `Hoy: ${a.today.count} recarga${a.today.count === 1 ? '' : 's'}` + (a.today.count ? ' · ' + CURS.filter(c => a.today[c] > 0).map(c => money(a.today[c], c)).join(' + ') : '')))),
+            el('div', { class: 'tiles tiles2' }, ...CURS.map(c => el('div', { class: 'tile' + ((a.balances[c] || 0) > 0 ? '' : ' zero') }, el('span', {}, CURIC[c](), CURN[c]), el('b', {}, fmtC(a.balances[c], c))))),
+            el('div', { class: 'row' }, cur, amt),
+            el('div', { class: 'acts' }, el('button', { class: 'grn', onclick: move(1) }, '➕ Agregar'), el('button', { class: 'sec', onclick: move(-1) }, '➖ Quitar'),
+              el('button', { class: a.bal_locked ? 'grn' : 'red', onclick: async e => {
+                if (!a.bal_locked && !confirm(`¿Bloquear el saldo de ${a.username}? No podrá hacer recargas hasta que lo desbloquees.`)) return;
+                e.target.disabled = true; try { await api('POST', '/api/assistants/lock', { assistant_id: a.id, locked: !a.bal_locked }); reloadA(); } catch (err) { msg(am, err.message, 'err'); e.target.disabled = false; } } }, a.bal_locked ? '🔓 Desbloquear' : '🔒 Bloquear saldo')), am);
+        }));
+    }).catch(e => msg(abox, e.message, 'err'));
+    put(out, card('Mis asistentes', abox)); reloadA();
   }
   if (rtab === 'saldo') {
     // Sub-pestañas: 3 métodos de depósito
@@ -862,7 +921,7 @@ async function resellerView() {
         el('div', { class: 'r' }, el('div', {}, (r.approved ?? r.chain_amount ?? r.amount) == null ? '—' : money(r.approved ?? r.chain_amount ?? r.amount, r.currency)), tag(r.status, REQ))))) : el('div', { class: 'mut' }, 'No has pedido saldo todavía.')));
   }
   if (rtab === 'cuenta') {
-    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username))), storeCard(extra), googleCard(), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
+    put(out, card('Mi cuenta', el('div', {}, 'Usuario: ', el('b', {}, me.username)), ASIS ? el('div', { class: 'mut', style: 'margin-top:6px' }, '🤝 Eres asistente de ' + extra.assistant_of + '. Él te pasa el saldo.') : null), ASIS ? null : storeCard(extra), googleCard(), telegramCard(extra, resellerView) || card('Avisos por Telegram', el('div', { class: 'mut' }, 'El administrador todavía no activó los avisos por Telegram.')), ...accountCards(false));
   }
   // Refresco automático mientras haya algo en curso, pero sin borrar lo que el revendedor está escribiendo
   if (orders.some(o => ['pending', 'processing', 'unknown'].includes(o.status)) || reqs.some(r => r.status === 'pending')) {
@@ -1095,6 +1154,12 @@ async function adminView() {
         return card('Registro de revendedores', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Tus revendedores pueden crearse una cuenta con su correo en ' + location.origin + '. Las cuentas nuevas nacen con el margen general de arriba (' + S.default_markup + '%).'),
           el('div', { class: 'row' }, mode),
           el('div', { class: 'acts' }, act('Guardar', () => api('POST', '/api/admin/settings', { registration: mode.value }), '')));
+      })(),
+      (() => {
+        const w = el('input', { type: 'url', inputmode: 'url', placeholder: 'https://wa.me/53XXXXXXXX o https://whatsapp.com/channel/…', value: st.settings.whatsapp_url || '', 'aria-label': 'Enlace de WhatsApp' });
+        return card('Botón de WhatsApp', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Sale como un botón flotante en toda la web (también en la pantalla de entrada). Pon el enlace de tu canal, grupo o número. Déjalo vacío para quitarlo.'), w,
+          el('div', { class: 'acts' }, act('Guardar', async () => { await api('POST', '/api/admin/settings', { whatsapp_url: w.value.trim() }); paintWhatsApp(w.value.trim()); }, ''),
+            st.settings.whatsapp_url ? act('Quitar', async () => { await api('POST', '/api/admin/settings', { whatsapp_url: '' }); paintWhatsApp(''); }, 'red') : null));
       })(),
       sect('Avisos'),
       card('Alerta de saldo bajo', el('div', { class: 'mut', style: 'margin-bottom:8px' }, 'Te aviso por Telegram (y aquí arriba) cuando el saldo de Central One baje de este monto. 0 = desactivada.'),
@@ -1346,10 +1411,11 @@ async function adminView() {
   if (tab === 'revendedores') {
     const defM = OWN ? Number(st.settings.default_markup ?? 10) : 0;
     const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off', 'aria-label': 'Usuario' }), p: el('input', { placeholder: 'Contraseña (8+)', type: 'password', autocomplete: 'new-password', 'aria-label': 'Contraseña' }),
-      m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', step: 'any', value: String(defM), 'aria-label': 'Margen %' }) };
+      m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', step: 'any', value: String(defM), 'aria-label': 'Margen %' }),
+      par: el('select', { 'aria-label': 'Tipo de cuenta' }, el('option', { value: '' }, 'Revendedor normal'), ...users.filter(u => !u.parent_id && !u.pending).map(u => el('option', { value: String(u.id) }, '🤝 Asistente de ' + u.username))) };
     const create = el('button', {}, 'Crear cuenta');
     create.onclick = async () => {
-      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.')}); adminView(); }
+      try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.'), parent_id: OWN && nu.par.value ? Number(nu.par.value) : undefined }); adminView(); }
       catch (e) { msg(note, e.message, 'err'); }
     };
     const usersBox = el('div');
@@ -1364,8 +1430,8 @@ async function adminView() {
       return el('div', { class: 'rbox' + (r.active ? '' : ' off') },
         el('div', { class: 'rhead' }, avatar2(r.username, true),
           el('div', { style: 'min-width:0;flex:1' }, el('div', { class: 'rname' }, r.username), el('div', { class: 'stt ' + (r.active ? 'on' : 'off') }, r.active ? 'Activo' : 'Desactivado'),
-            el('div', { class: 'tags' }, r.deposit_block ? el('span', { class: 'tag off' }, '⛔ Depósitos bloqueados') : null,
-              OWN ? el('span', { class: 'tag ' + (r.markup_manual ? 'manual' : 'auto') }, `Margen ${r.markup_pct}% · ${r.markup_manual ? '🔒 manual' : 'general'}`) : null,
+            el('div', { class: 'tags' }, r.parent ? el('span', { class: 'tag asis' }, '🤝 Asistente de ' + r.parent) : null, r.assistants ? el('span', { class: 'tag asis' }, `👥 ${r.assistants} asistente${r.assistants === 1 ? '' : 's'}`) : null, r.bal_locked ? el('span', { class: 'tag off' }, '🔒 Saldo bloqueado') : null, r.deposit_block ? el('span', { class: 'tag off' }, '⛔ Depósitos bloqueados') : null,
+              OWN && !r.parent ? el('span', { class: 'tag ' + (r.markup_manual ? 'manual' : 'auto') }, `Margen ${r.markup_pct}% · ${r.markup_manual ? '🔒 manual' : 'general'}`) : null,
               null))),
         el('div', { class: 'tiles tiles2' }, ...CURS.map(c => el('div', { class: 'tile' + ((b[c] || 0) > 0 ? '' : ' zero') }, el('span', {}, CURIC[c](), CURN[c]),
           el('b', {}, fmtC(b[c], c))))),
@@ -1377,7 +1443,15 @@ async function adminView() {
           el('div', { class: 'acts', style: 'margin:0 0 10px' },
             act('Cambiar margen', async () => { const a = prompt(`Margen % para ${r.username}.\nQuedará como MANUAL 🔒: el cambio general ya no lo toca.`, r.markup_pct); if (a !== null && a.trim() !== '') await api('POST', '/api/admin/user-update', { user_id: r.id, markup_pct: a.replace(',', '.') }); }),
             r.markup_manual ? act('Margen: volver a automático', () => api('POST', '/api/admin/user-update', { user_id: r.id, markup_auto: true })) : null,
-            act('Cambiar clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }))) : null);
+            act('Cambiar clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
+            r.parent ? act('Quitar de asistente', async () => { if (!confirm(`${r.username} dejará de ser asistente de ${r.parent} y será un revendedor normal (con su propio margen y pidiendo saldo). ¿Seguir?`)) throw new Error('Cancelado'); await api('POST', '/api/admin/user-update', { user_id: r.id, parent_id: 0 }); })
+              : r.assistants ? null : act('🤝 Hacer asistente de…', async () => {
+                const opts = users.filter(u => !u.parent_id && !u.pending && u.id !== r.id);
+                const a = prompt(`¿De qué revendedor será asistente ${r.username}? Escribe su usuario o correo:\n\n` + opts.slice(0, 15).map(u => '• ' + u.username).join('\n'));
+                if (a === null || !a.trim()) throw new Error('Cancelado');
+                const p = opts.find(u => u.username.toLowerCase() === a.trim().toLowerCase()); if (!p) throw new Error('No encontré ese revendedor.');
+                await api('POST', '/api/admin/user-update', { user_id: r.id, parent_id: p.id });
+              }))) : null);
     };
     const renderUsers = () => {
       const base = users.filter(u => !u.pending && matchU(u)), pU = users.filter(u => u.pending && matchU(u)), aU = base.filter(FILT[userFilter] || FILT.all);
@@ -1398,7 +1472,7 @@ async function adminView() {
     put(out, el('details', { class: 'card newrev', open: users.length ? null : '' }, el('summary', {}, el('h2', { style: 'margin:0' }, '➕ Nuevo revendedor'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
       el('div', { style: 'margin-top:12px' }, el('div', { class: 'row' }, nu.u, nu.p),
         OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, `Margen % (general: ${defM}%)`, nu.m)) : null,
-        null,
+        OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Tipo de cuenta (un asistente compra al precio de su revendedor y recibe saldo solo de él)', nu.par)) : null,
         el('div', { class: 'acts' }, create),
         el('div', { class: 'mut', style: 'margin-top:8px' }, OWN ? `Precio para él = costo de Central One + su margen %. Si dejas el margen general (${defM}%), la cuenta sigue los cambios generales; si pones otro, queda como manual 🔒.` : 'La cuenta se crea con el margen general que puso el dueño.'), note)),
       searchBar, usersBox, infoBar('Puedes crear revendedores con diferentes márgenes y gestionar sus saldos de forma rápida y segura.'));
