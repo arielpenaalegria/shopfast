@@ -747,6 +747,55 @@ route('POST', '/api/assistants/lock', 'reseller', async (req, res, u, b) => {
   send(res, 200, { ok: true });
 });
 
+// ---------- Torneo "Furia de Recargas" ----------
+// Cuenta las recargas COMPLETADAS de cada revendedor entre inicio y fin (hora de Cuba, UTC-5 en estas fechas).
+// Las recargas de sus asistentes suman a su revendedor. Las cuentas desactivadas no participan.
+// Los premios los paga el dueño a mano (Revendedores → Agregar saldo).
+const EVENT = {
+  name: 'Furia de Recargas',
+  desc: 'Evento Furia de Recargas, todos los vendedores compiten por estos increíbles premios. Deposita, Vende y Gana 🔥',
+  start: new Date(process.env.EVENT_START || '2026-11-27T00:00:00-05:00'), end: new Date(process.env.EVENT_END || '2026-12-11T00:00:00-05:00'),
+  prizes: ['🥇 10 USDT', '🥈 5 USDT', '🥉 3 USDT'],
+  showDaysAfter: 7, // la tabla final se sigue viendo 7 días después de terminar
+};
+/** Nombre que ven los demás: el de su tienda, o el correo/usuario recortado (no se muestran correos completos). */
+const publicName = u => {
+  if (u.store_name) return String(u.store_name).slice(0, 30);
+  const n = String(u.username || ''), at = n.indexOf('@'), base = at > 0 ? n.slice(0, at) : n;
+  return base.length <= 3 ? base[0] + '***' : base.slice(0, 3) + '***' + base.slice(-1);
+};
+let eventCache = { t: 0, rows: null };
+async function eventRows() {
+  if (eventCache.rows && Date.now() - eventCache.t < 30e3) return eventCache.rows;
+  const users = await C.users.find({ role: 'reseller' }).toArray(), byId = new Map(users.map(u => [u._id, u]));
+  const os = await C.orders.find({ status: 'completed', created_at: { $gte: EVENT.start, $lt: EVENT.end } }).toArray();
+  const agg = new Map();
+  for (const o of os) {
+    let u = byId.get(o.user_id); if (!u) continue;
+    if (u.parent_id) u = byId.get(u.parent_id) || u; // el asistente suma para su revendedor
+    if (!u.active) continue;
+    const a = agg.get(u._id) || { id: u._id, count: 0, last: 0 }, t = new Date(o.created_at).getTime();
+    a.count++; if (t > a.last) a.last = t; agg.set(u._id, a);
+  }
+  // empate: gana quien llegó primero a esa cantidad
+  const rows = [...agg.values()].sort((x, y) => y.count - x.count || x.last - y.last).map((a, i) => ({ ...a, pos: i + 1, user: byId.get(a.id) }));
+  eventCache = { t: Date.now(), rows };
+  return rows;
+}
+route('GET', '/api/event', 'any', async (req, res, u) => {
+  const now = Date.now();
+  if (now > EVENT.end.getTime() + EVENT.showDaysAfter * 864e5) return send(res, 200, { active: false });
+  const rows = await eventRows(), staff = u.role === 'admin' || u.role === 'subadmin';
+  const meId = u.parent_id || u.id, mine = rows.find(r => r.id === meId);
+  send(res, 200, {
+    active: true, name: EVENT.name, desc: EVENT.desc, prizes: EVENT.prizes,
+    start: EVENT.start.toISOString(), end: EVENT.end.toISOString(), now: new Date(now).toISOString(),
+    state: now < EVENT.start.getTime() ? 'soon' : now < EVENT.end.getTime() ? 'live' : 'ended',
+    rows: rows.slice(0, 50).map(r => ({ pos: r.pos, name: staff ? r.user.username : publicName(r.user), count: r.count, me: r.id === meId })),
+    me: mine ? { pos: mine.pos, count: mine.count } : null, total: rows.length,
+  });
+});
+
 // ---------- Mis ventas (hora de Cuba) ----------
 const TZ = process.env.TZ_STATS || 'America/Havana';
 /** Medianoche de hoy en la zona de Cuba, como Date (UTC). */
