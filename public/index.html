@@ -527,6 +527,43 @@ button{font-size:.88rem}
 body:has(#cartbar) .wafab{bottom:96px}
 .modal~.wafab,body:has(.modal) .wafab{display:none}
 @media (max-width:520px){.wafab{right:10px;bottom:14px;padding:7px}.wafab .wat{display:none}.wafab img,.wafab .waic{width:34px;height:34px}body:has(#cartbar) .wafab{bottom:88px}.scell b{font-size:1.35rem}}
+/* ===== Torneo Furia de Recargas ===== */
+.evfab{position:fixed;right:12px;bottom:84px;z-index:61;display:flex;flex-direction:column;align-items:center;gap:0;padding:7px 8px!important;min-height:0!important;border-radius:16px!important;background:linear-gradient(160deg,#ff8a1f,#e11d48)!important;color:#fff!important;border:1.5px solid #fde68a!important;box-shadow:0 6px 20px -4px #ff5a1faa;animation:evp 2.4s ease-in-out infinite}
+.evfab span{font-size:1.45rem;line-height:1}.evfab small{font-size:.62rem;font-weight:800;white-space:nowrap}
+@keyframes evp{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
+.evpanel{position:fixed;right:10px;top:96px;z-index:62;width:min(370px,calc(100vw - 20px));max-height:calc(100dvh - 116px);overflow:auto;padding:14px;border-radius:20px;color:#fff;
+background:linear-gradient(180deg,#1d0d2e,#0b0716) padding-box,linear-gradient(140deg,#ff8a1f,#e11d48,#a855f7) border-box;border:2px solid transparent;box-shadow:0 18px 50px -10px #000,0 0 30px -8px #ff5a1f88}
+.evpanel.hidden{display:none}
+.evhead{display:flex;gap:8px;align-items:flex-start}.evhead>div{flex:1;min-width:0}
+.evtitle{font-size:1.2rem;font-weight:900;background:linear-gradient(90deg,#fde68a,#ff8a1f,#ff4d6d);-webkit-background-clip:text;background-clip:text;color:transparent}
+.evdesc{font-size:.8rem;color:#e9d5ff;margin-top:3px}
+.evx{padding:4px 9px!important;min-height:0!important;background:#ffffff1a!important;border:1px solid #ffffff33!important;border-radius:10px!important;color:#fff!important;box-shadow:none!important}
+.evlbl{margin:10px 0 6px;font-size:.82rem;font-weight:800;color:#fdba74}
+.evclock{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.evclock>div{display:flex;flex-direction:column;align-items:center;padding:7px 2px;border-radius:12px;background:#ffffff0f;border:1px solid #ff8a1f66}
+.evclock b{font-size:1.35rem;font-variant-numeric:tabular-nums}.evclock span{font-size:.62rem;color:#d4d4d8}
+.evprizes{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.evprizes span{flex:1;min-width:0;text-align:center;font-size:.78rem;font-weight:800;padding:6px 4px;border-radius:10px;background:#f5b5001f;border:1px solid #f5b50077;color:#fde68a;white-space:nowrap}
+.evlist{display:flex;flex-direction:column;gap:5px}
+.evrow{display:grid;grid-template-columns:36px minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:8px 10px;border-radius:12px;background:#ffffff0a;font-size:.86rem}
+.evrow .evname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.evrow b{font-size:1rem}.evrow em{font-style:normal;font-size:.7rem;font-weight:800;color:#86efac}
+.evrow .evpos{font-size:1.05rem;text-align:center}
+.evth{background:none;font-size:.7rem;color:#a1a1aa;padding:2px 10px;grid-template-columns:36px minmax(0,1fr) auto}
+.evrow.top1{background:linear-gradient(90deg,#f5b50033,#ffffff08);border:1px solid #f5b50088}.evrow.top2{background:linear-gradient(90deg,#cbd5e133,#ffffff08);border:1px solid #cbd5e177}.evrow.top3{background:linear-gradient(90deg,#d9773333,#ffffff08);border:1px solid #d9773377}
+.evrow.me{outline:2px solid #a855f7}
+.evme{margin-top:10px;padding:9px 10px;border-radius:12px;background:#a855f722;border:1px solid #a855f766;font-size:.84rem;font-weight:700}
+.evnote{font-size:.7rem!important;margin-top:8px}
+body:has(#cartbar) .evfab{bottom:160px}
+@media (max-width:520px){.evfab{bottom:70px;right:9px}body:has(#cartbar) .evfab{bottom:144px}.evpanel{top:78px;right:6px;width:calc(100vw - 12px);max-height:calc(100dvh - 92px)}}
+/* ===== Buscador de revendedor ===== */
+.picker{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.pkchosen{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:9px 12px;border-radius:14px;background:#ffffff0d;border:1px solid #a855f766;font-size:.88rem;overflow-wrap:anywhere}
+.pkchosen button{padding:4px 10px!important;min-height:0!important;font-size:.78rem!important;flex:none}
+.picker .search{margin:0}
+.pkres{display:flex;flex-direction:column;gap:5px;max-height:300px;overflow:auto}
+.pkres .pkitem{display:flex!important;align-items:center;gap:10px;text-align:left;justify-content:flex-start!important;padding:7px 10px!important;min-height:0!important;border-radius:12px!important;background:#ffffff0a!important;border:1px solid #ffffff1f!important;color:#fff!important;box-shadow:none!important;font-weight:600;font-size:.86rem!important}
+.pkres .pkitem span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pkres .pkitem .av2{width:30px!important;height:30px!important;font-size:.85rem!important;flex:none}
+.pkmodal{position:fixed;inset:0;z-index:80;background:#000b;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;backdrop-filter:blur(3px)}
 </style></head><body>
 <header><div class="brand"><img src="logo.jpg" alt=""><b><span class="bn">Shop <em>Fast</em></span></b></div><span id="who"></span></header>
 <main>

@@ -299,15 +299,54 @@ api('GET', '/api/public-config').then(cfg => {
   $('login').append(toggle, form);
 }).catch(() => {});
 
+/** Torneo "Furia de Recargas": botón 🏆 en la esquina derecha + tabla que se abre sola al entrar. */
+let evTimer = null, evOpenedFor = null;
+async function eventWidget(me) {
+  let d; try { d = await api('GET', '/api/event'); } catch { return; }
+  const wasOpen = document.getElementById('evpanel') && !document.getElementById('evpanel').classList.contains('hidden');
+  document.getElementById('evfab')?.remove(); document.getElementById('evpanel')?.remove(); clearInterval(evTimer);
+  if (!d.active) return;
+  const skew = Date.now() - new Date(d.now).getTime(), start = new Date(d.start).getTime(), end = new Date(d.end).getTime();
+  const left = ms => { ms = Math.max(0, ms); const s = Math.floor(ms / 1000), dd = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+    return el('div', { class: 'evclock' }, ...[[dd, 'Días'], [h, 'Horas'], [m, 'Min'], [x, 'Seg']].map(([v, l]) => el('div', {}, el('b', {}, String(v).padStart(2, '0')), el('span', {}, l)))); };
+  const clockBox = el('div'), clockLbl = el('div', { class: 'evlbl' }), fabT = el('small');
+  const tick = () => {
+    const now = Date.now() - skew, st = now < start ? 'soon' : now < end ? 'live' : 'ended';
+    clockLbl.textContent = st === 'soon' ? '⏳ Empieza en' : st === 'live' ? '🔥 Termina en' : '🏁 Evento finalizado';
+    clockBox.replaceChildren(st === 'ended' ? el('div', { class: 'mut' }, 'Estos son los ganadores. ¡Gracias a todos por participar!') : left((st === 'soon' ? start : end) - now));
+    const ms = Math.max(0, (st === 'soon' ? start : end) - now), dd = Math.floor(ms / 864e5), hh = Math.floor(ms % 864e5 / 36e5);
+    fabT.textContent = st === 'ended' ? 'Final' : `${dd}d ${hh}h`;
+  };
+  const medal = ['🥇', '🥈', '🥉'];
+  const rows = d.rows.length ? d.rows.map(r => el('div', { class: 'evrow' + (r.pos <= 3 ? ' top' + r.pos : '') + (r.me ? ' me' : '') },
+      el('span', { class: 'evpos' }, r.pos <= 3 ? medal[r.pos - 1] : '#' + r.pos), el('span', { class: 'evname' }, r.name + (r.me ? ' (tú)' : '')),
+      el('b', {}, String(r.count)), r.pos <= 3 ? el('em', {}, d.prizes[r.pos - 1].replace(/^\S+\s/, '')) : null))
+    : [el('div', { class: 'mut', style: 'text-align:center;padding:10px' }, d.state === 'soon' ? 'La tabla se llena cuando empiece el evento.' : 'Todavía nadie tiene recargas completadas. ¡Sé el primero!')];
+  const panel = el('div', { id: 'evpanel', class: 'evpanel hidden', role: 'dialog', 'aria-label': d.name },
+    el('div', { class: 'evhead' }, el('div', {}, el('div', { class: 'evtitle' }, '🏆 ' + d.name), el('div', { class: 'evdesc' }, d.desc)),
+      el('button', { class: 'evx', 'aria-label': 'Cerrar', onclick: () => panel.classList.add('hidden') }, '✕')),
+    clockLbl, clockBox,
+    el('div', { class: 'evprizes' }, ...d.prizes.map(p => el('span', {}, p))),
+    el('div', { class: 'evlist' }, el('div', { class: 'evrow evth' }, el('span', {}, '#'), el('span', {}, 'Revendedor'), el('span', {}, 'Recargas')), ...rows),
+    me.role === 'reseller' ? el('div', { class: 'evme' }, d.me ? `Vas en el lugar #${d.me.pos} con ${d.me.count} recarga${d.me.count === 1 ? '' : 's'}.` : 'Aún no tienes recargas en el evento. ¡Deposita, vende y gana!') : null,
+    el('div', { class: 'mut evnote' }, 'Solo cuentan las recargas completadas. Las de tus asistentes suman para ti. Hora de Cuba.'));
+  const fab = el('button', { id: 'evfab', class: 'evfab', 'aria-label': 'Ver tabla del torneo', onclick: () => panel.classList.toggle('hidden') }, el('span', {}, '🏆'), fabT);
+  document.body.append(panel, fab);
+  tick(); evTimer = setInterval(tick, 1000);
+  if (evOpenedFor !== me.username) { evOpenedFor = me.username; panel.classList.remove('hidden'); } // se abre sola al entrar
+  else if (wasOpen) panel.classList.remove('hidden');
+}
+setInterval(() => { if (ME && document.getElementById('evfab')) eventWidget(ME); }, 60000); // actualiza la tabla cada minuto
 async function boot() {
   try {
     const me = await api('GET', '/api/me');
     ME = me;
     $('who').replaceChildren(
       el('button', { class: 'acct', onclick: () => { if (me.role === 'admin' || me.role === 'subadmin') { tab = me.role === 'admin' ? 'seguridad' : 'cuenta'; adminView(); } else { rtab = 'cuenta'; resellerView(); } window.scrollTo(0, 0); } }, el('span', {}, '👤'), 'Mi cuenta'),
-      el('a', { href: '#', onclick: async e => { e.preventDefault(); await api('POST', '/api/logout', {}); show('login'); } }, 'Salir'));
+      el('a', { href: '#', onclick: async e => { e.preventDefault(); await api('POST', '/api/logout', {}); clearInterval(evTimer); evOpenedFor = null; document.getElementById('evfab')?.remove(); document.getElementById('evpanel')?.remove(); show('login'); } }, 'Salir'));
     show('app');
     me.role === 'admin' || me.role === 'subadmin' ? adminView() : resellerView();
+    eventWidget(me);
   } catch { show('login'); }
 }
 
@@ -1408,11 +1447,29 @@ async function adminView() {
       infoY(el('b', {}, 'Solo se pueden vender productos por ID.'), ' Los productos de tarjetas de regalo (PIN) aún no están disponibles.'));
   }
 
+  /** Buscador con lupa para elegir un revendedor (para vincular asistentes). value = id o '' (revendedor normal). */
+  const resellerPicker = (list, onPick) => {
+    let value = '';
+    const q = el('input', { type: 'search', placeholder: 'Buscar revendedor por correo o usuario…', autocomplete: 'off', 'aria-label': 'Buscar revendedor' });
+    const res = el('div', { class: 'pkres' }), chosen = el('div', { class: 'pkchosen' });
+    const paintChosen = () => { const u = list.find(x => String(x.id) === value);
+      chosen.replaceChildren(...[u ? el('span', {}, '🤝 Asistente de ', el('b', {}, u.username)) : el('span', {}, '👤 Revendedor normal (o busca abajo para hacerlo asistente)'),
+        u ? el('button', { type: 'button', class: 'ghost', onclick: () => { value = ''; paintChosen(); onPick && onPick(''); } }, '✕ Quitar') : null].filter(Boolean)); };
+    const paint = () => {
+      const t = q.value.trim().toLowerCase();
+      if (!t) return res.replaceChildren();
+      const hits = list.filter(u => String(u.username).toLowerCase().includes(t)).slice(0, 8);
+      res.replaceChildren(...(hits.length ? hits.map(u => el('button', { type: 'button', class: 'pkitem', onclick: () => { value = String(u.id); q.value = ''; res.replaceChildren(); paintChosen(); onPick && onPick(value); } },
+        avatar2(u.username), el('span', {}, u.username))) : [el('div', { class: 'mut', style: 'padding:6px' }, 'Ningún revendedor coincide.')]));
+    };
+    q.addEventListener('input', paint); paintChosen();
+    return { node: el('div', { class: 'picker' }, chosen, el('div', { class: 'search' }, el('span', { class: 'lupa', 'aria-hidden': 'true' }, '🔍'), q), res), get value() { return value; } };
+  };
   if (tab === 'revendedores') {
     const defM = OWN ? Number(st.settings.default_markup ?? 10) : 0;
     const nu = { u: el('input', { placeholder: 'Usuario', autocomplete: 'off', 'aria-label': 'Usuario' }), p: el('input', { placeholder: 'Contraseña (8+)', type: 'password', autocomplete: 'new-password', 'aria-label': 'Contraseña' }),
       m: el('input', { placeholder: 'Margen %', type: 'number', inputmode: 'decimal', step: 'any', value: String(defM), 'aria-label': 'Margen %' }),
-      par: el('select', { 'aria-label': 'Tipo de cuenta' }, el('option', { value: '' }, 'Revendedor normal'), ...users.filter(u => !u.parent_id && !u.pending).map(u => el('option', { value: String(u.id) }, '🤝 Asistente de ' + u.username))) };
+      par: resellerPicker(users.filter(u => !u.parent_id && !u.pending)) };
     const create = el('button', {}, 'Crear cuenta');
     create.onclick = async () => {
       try { await api('POST', '/api/admin/users', { username: nu.u.value, password: nu.p.value, markup_pct: nu.m.value.replace(',', '.'), parent_id: OWN && nu.par.value ? Number(nu.par.value) : undefined }); adminView(); }
@@ -1445,13 +1502,18 @@ async function adminView() {
             r.markup_manual ? act('Margen: volver a automático', () => api('POST', '/api/admin/user-update', { user_id: r.id, markup_auto: true })) : null,
             act('Cambiar clave', async () => { const a = prompt('Nueva contraseña (8+):'); if (a) await api('POST', '/api/admin/user-update', { user_id: r.id, password: a }); }),
             r.parent ? act('Quitar de asistente', async () => { if (!confirm(`${r.username} dejará de ser asistente de ${r.parent} y será un revendedor normal (con su propio margen y pidiendo saldo). ¿Seguir?`)) throw new Error('Cancelado'); await api('POST', '/api/admin/user-update', { user_id: r.id, parent_id: 0 }); })
-              : r.assistants ? null : act('🤝 Hacer asistente de…', async () => {
-                const opts = users.filter(u => !u.parent_id && !u.pending && u.id !== r.id);
-                const a = prompt(`¿De qué revendedor será asistente ${r.username}? Escribe su usuario o correo:\n\n` + opts.slice(0, 15).map(u => '• ' + u.username).join('\n'));
-                if (a === null || !a.trim()) throw new Error('Cancelado');
-                const p = opts.find(u => u.username.toLowerCase() === a.trim().toLowerCase()); if (!p) throw new Error('No encontré ese revendedor.');
-                await api('POST', '/api/admin/user-update', { user_id: r.id, parent_id: p.id });
-              }))) : null);
+              : r.assistants ? null : el('button', { type: 'button', class: 'sec', onclick: () => {
+                const m = el('div'), close = () => ov.remove();
+                const pk = resellerPicker(users.filter(u => !u.parent_id && !u.pending && u.id !== r.id), async id => {
+                  if (!id) return;
+                  const p = users.find(u => String(u.id) === id);
+                  if (!confirm(`¿${r.username} será asistente de ${p.username}?`)) return;
+                  try { await api('POST', '/api/admin/user-update', { user_id: r.id, parent_id: p.id }); close(); adminView(); } catch (e) { msg(m, e.message, 'err'); }
+                });
+                const ov = el('div', { class: 'pkmodal', onclick: e => { if (e.target === ov) close(); } }, el('div', { class: 'card', style: 'max-width:440px;width:calc(100% - 24px)' },
+                  el('h2', {}, `🤝 ${r.username} será asistente de…`), pk.node, m, el('div', { class: 'acts' }, el('button', { type: 'button', class: 'sec', onclick: close }, 'Cancelar'))));
+                document.body.append(ov); ov.querySelector('input').focus();
+              } }, '🤝 Hacer asistente de…'))) : null);
     };
     const renderUsers = () => {
       const base = users.filter(u => !u.pending && matchU(u)), pU = users.filter(u => u.pending && matchU(u)), aU = base.filter(FILT[userFilter] || FILT.all);
@@ -1472,7 +1534,7 @@ async function adminView() {
     put(out, el('details', { class: 'card newrev', open: users.length ? null : '' }, el('summary', {}, el('h2', { style: 'margin:0' }, '➕ Nuevo revendedor'), el('span', { class: 'chev', style: 'margin-left:auto' }, '›')),
       el('div', { style: 'margin-top:12px' }, el('div', { class: 'row' }, nu.u, nu.p),
         OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, `Margen % (general: ${defM}%)`, nu.m)) : null,
-        OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Tipo de cuenta (un asistente compra al precio de su revendedor y recibe saldo solo de él)', nu.par)) : null,
+        OWN ? el('div', { class: 'row' }, el('label', { class: 'fld' }, 'Tipo de cuenta: busca el revendedor si es un asistente (compra a su precio y recibe saldo solo de él)', nu.par.node)) : null,
         el('div', { class: 'acts' }, create),
         el('div', { class: 'mut', style: 'margin-top:8px' }, OWN ? `Precio para él = costo de Central One + su margen %. Si dejas el margen general (${defM}%), la cuenta sigue los cambios generales; si pones otro, queda como manual 🔒.` : 'La cuenta se crea con el margen general que puso el dueño.'), note)),
       searchBar, usersBox, infoBar('Puedes crear revendedores con diferentes márgenes y gestionar sus saldos de forma rápida y segura.'));
